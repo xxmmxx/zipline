@@ -91,7 +91,6 @@ def dividend_payment(data=None):
 
 
 class Event(object):
-    is_wide = False
 
     def __init__(self, initial_values=None):
         if initial_values:
@@ -123,7 +122,6 @@ class Event(object):
 
 
 class TradeEvent(Event):
-    is_wide = False
     type = DATASOURCE_TYPE.TRADE
 
     def sid_ohlcv(self, sid):
@@ -146,14 +144,6 @@ def sid_ohlcv(event, sid=_missing):
     if sid is _missing:
         raise TypeError("sid cannot be missing")
 
-    # regular ole event
-    if not event.is_wide:
-        if sid is None:
-            return event
-        # sanity check
-        assert event.sid == sid
-        return event
-
     # sid is none and event is Wide
     if sid is None:
         if len(event.sids) != 1:
@@ -175,7 +165,6 @@ class WideTradeEvent(Event):
     replace those usecases with a 1-sid WideTradeEvent. For now the
     consuming API is a bit disjointed.
     """
-    is_wide = True
     type = DATASOURCE_TYPE.TRADE
     _trade_event = TradeEvent()
 
@@ -589,22 +578,18 @@ class BarData(object):
         return sid_data
 
     def update_sid(self, event):
-        if event.is_wide:
-            sids_set = event.sids_set
-            # until https://github.com/quantopian/zipline/issues/537
-            # gets resolved, using sid_translate dict
-            sid_translate = getattr(event, 'sid_translate', {})
-            # prepopulate BarData with missing SIDData
-            for sid in sids_set.difference(self._data):
-                sid = sid_translate.get(sid, sid)
-                self.get_default(sid)
+        sids_set = event.sids_set
+        # until https://github.com/quantopian/zipline/issues/537
+        # gets resolved, using sid_translate dict
+        sid_translate = getattr(event, 'sid_translate', {})
+        # prepopulate BarData with missing SIDData
+        for sid in sids_set.difference(self._data):
+            sid = sid_translate.get(sid, sid)
+            self.get_default(sid)
 
-            lib.update_sid(self._data, np.asarray(event.columns),
-                           np.asarray(event.sids), event.values, event.dt,
-                           sid_translate)
-        else:
-            sid_data = self.get_default(event.sid)
-            sid_data.update(event.__dict__)
+        lib.update_sid(self._data, np.asarray(event.columns),
+                       np.asarray(event.sids), event.values, event.dt,
+                       sid_translate)
 
     def __setitem__(self, name, value):
         self._data[name] = value

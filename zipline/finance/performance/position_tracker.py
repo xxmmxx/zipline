@@ -39,25 +39,13 @@ class PositionTracker(object):
 
     def update_last_sale(self, event):
         # NOTE, PerformanceTracker already vetted as TRADE type
-        if event.is_wide:
-            lib.update_last_sales(self.positions,
-                                  np.asarray(event.columns),
-                                  np.asarray(event.sids),
-                                  event.values,
-                                  event.dt,
-                                  self._position_last_sale_prices,
-                                  event.price_loc)
-        else:
-            price = event.price
-            sid = event.sid
-            if sid not in self.positions:
-                return
-
-            if not checknull(price):
-                pos = self.positions[sid]
-                pos.last_sale_date = event.dt
-                pos.last_sale_price = price
-                self._position_last_sale_prices[sid] = price
+        lib.update_last_sales(self.positions,
+                              np.asarray(event.columns),
+                              np.asarray(event.sids),
+                              event.values,
+                              event.dt,
+                              self._position_last_sale_prices,
+                              event.price_loc)
 
         self._position_values = None  # invalidate cache
 
