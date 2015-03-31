@@ -2,6 +2,7 @@ language: python
 matrix:
   include:
   - python: 2.7
+    env:
       - PANDAS_VERSION=0.16.0
       - NUMPY_VERSION=1.9.2
   - python: 3.3
