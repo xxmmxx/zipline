@@ -102,6 +102,8 @@ def parse_args(argv, ipython_mode=False):
     parser.add_argument('--source', choices=('yahoo',))
     parser.add_argument('--symbols')
     parser.add_argument('--output', '-o')
+    parser.add_argument('--no-intermediate-results',
+                        action='store_true')
     if ipython_mode:
         parser.add_argument('--local_namespace', action='store_true')
 
@@ -190,7 +192,8 @@ def run_pipeline(print_algo=True, **kwargs):
                                     capital_base=float(kwargs['capital_base']),
                                     algo_filename=kwargs.get('algofile'))
 
-    perf = algo.run(source)
+    intermediate_results = not kwargs['no_intermediate_results']
+    perf = algo.run(source, intermediate_results=intermediate_results)
 
     output_fname = kwargs.get('output', None)
     if output_fname is not None:
