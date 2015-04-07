@@ -389,8 +389,10 @@ class TradingAlgorithm(object):
     # TODO: make a new subclass, e.g. BatchAlgorithm, and move
     # the run method to the subclass, and refactor to put the
     # generator creation logic into get_generator.
-    def run(self, source, overwrite_sim_params=True,
-            benchmark_return_source=None):
+    def run(self, source,
+            overwrite_sim_params=True,
+            benchmark_return_source=None,
+            intermediate_results=True):
         """Run the algorithm.
 
         :Arguments:
@@ -439,6 +441,7 @@ class TradingAlgorithm(object):
             # Changing period_start and period_close might require updating
             # of first_open and last_close.
             self.sim_params._update_internal()
+            self.sim_params.intermediate_results = intermediate_results
 
         # Create history containers
         if self.history_specs:
