@@ -255,7 +255,7 @@ class AlgorithmSimulator(object):
                               perf_process_event,
                               event)
 
-        if benchmark_event_occurred and self.sim_params.trade_simulation:
+        if benchmark_event_occurred and self.sim_params.intermediate_results:
             return self.get_message(dt)
         else:
             return None
