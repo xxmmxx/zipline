@@ -258,6 +258,12 @@ class AlgorithmSimulator(object):
         if benchmark_event_occurred and self.sim_params.intermediate_results:
             return self.get_message(dt)
         else:
+            perf_tracker = self.algo.perf_tracker
+            completed_date = normalize_date(perf_tracker.market_close)
+            perf_tracker.cumulative_risk_metrics.update(
+                completed_date,
+                perf_tracker.todays_performance.returns,
+                perf_tracker.all_benchmark_returns[completed_date])
             return None
 
     def _call_handle_data(self):
