@@ -387,7 +387,7 @@ class SimulationParameters(object):
                  emission_rate='daily',
                  data_frequency='daily',
                  sids=None,
-                 intermediate_results=False):
+                 intermediate_results=True):
         self.period_start = period_start
         self.period_end = period_end
         self.capital_base = capital_base
