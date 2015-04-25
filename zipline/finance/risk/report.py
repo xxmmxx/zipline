@@ -87,12 +87,8 @@ class RiskReport(object):
         self.benchmark_returns = benchmark_returns
         self.algorithm_leverages = algorithm_leverages
 
-        if len(self.algorithm_returns) == 0:
-            start_date = self.sim_params.period_start
-            end_date = self.sim_params.period_end
-        else:
-            start_date = self.algorithm_returns.index[0]
-            end_date = self.algorithm_returns.index[-1]
+        start_date = self.sim_params.period_start
+        end_date = self.sim_params.period_end
 
         self.month_periods = self.periods_in_range(1, start_date, end_date)
         self.three_month_periods = self.periods_in_range(3, start_date,
