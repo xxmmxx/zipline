@@ -18,7 +18,6 @@ from pandas.tslib import normalize_date
 from zipline.finance import trading
 from zipline.protocol import (
     BarData,
-    SIDData,
     DATASOURCE_TYPE
 )
 
@@ -91,6 +90,9 @@ class AlgorithmSimulator(object):
 
             self._call_before_trading_start(mkt_open)
 
+            trade_event_pool = self.current_data._trade_event_pool
+            custom_event_pool = self.current_data._custom_event_pool
+
             for date, snapshot in stream_in:
 
                 self.simulation_dt = date
@@ -104,15 +106,18 @@ class AlgorithmSimulator(object):
                         if event.type == DATASOURCE_TYPE.SPLIT:
                             self.algo.blotter.process_split(event)
 
-                        elif event.type in (DATASOURCE_TYPE.TRADE,
-                                            DATASOURCE_TYPE.CUSTOM):
-                            self.update_universe(event)
+                        elif event.type == DATASOURCE_TYPE.TRADE:
+                            trade_event_pool[event.sid] = event
+                        elif event.type == DATASOURCE_TYPE.CUSTOM:
+                            custom_event_pool[event.sid] = event
                         self.algo.perf_tracker.process_event(event)
                 else:
                     message = self._process_snapshot(
                         date,
                         snapshot,
                         self.algo.instant_fill,
+                        trade_event_pool,
+                        custom_event_pool,
                     )
                     # Perf messages are only emitted if the snapshot contained
                     # a benchmark event.
@@ -168,7 +173,8 @@ class AlgorithmSimulator(object):
             risk_message = self.algo.perf_tracker.handle_simulation_end()
             yield risk_message
 
-    def _process_snapshot(self, dt, snapshot, instant_fill):
+    def _process_snapshot(self, dt, snapshot, instant_fill,
+                          trade_event_pool, custom_event_pool):
         """
         Process a stream of events corresponding to a single datetime, possibly
         returning a perf message to be yielded.
@@ -207,14 +213,14 @@ class AlgorithmSimulator(object):
         for event in snapshot:
 
             if event.type == DATASOURCE_TYPE.TRADE:
-                self.update_universe(event)
+                trade_event_pool[event.sid] = event
                 any_trade_occurred = True
 
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
                 benchmark_event_occurred = True
 
             elif event.type == DATASOURCE_TYPE.CUSTOM:
-                self.update_universe(event)
+                custom_event_pool[event.sid] = event
 
             elif event.type == DATASOURCE_TYPE.SPLIT:
                 # process_split is not assigned to a variable since it is
@@ -293,17 +299,3 @@ class AlgorithmSimulator(object):
             perf_message = self.algo.perf_tracker.to_dict()
             perf_message['minute_perf']['recorded_vars'] = rvars
             return perf_message
-
-    def update_universe(self, event):
-        """
-        Update the universe with new event information.
-        """
-        # Update our knowledge of this event's sid
-        # rather than use if event.sid in ..., just trying
-        # and handling the exception is significantly faster
-        try:
-            sid_data = self.current_data[event.sid]
-        except KeyError:
-            sid_data = self.current_data[event.sid] = SIDData(event.sid)
-
-        sid_data.__dict__.update(event.__dict__)

@@ -489,15 +489,17 @@ class BarData(object):
     def __init__(self, data=None):
         self._data = data or {}
         self._contains_override = None
+        self._trade_event_pool = {}
+        self._custom_event_pool = {}
 
     def __contains__(self, name):
         if self._contains_override:
             if self._contains_override(name):
-                return name in self._data
+                return name in self._trade_event_pool
             else:
                 return False
         else:
-            return name in self._data
+            return name in self._trade_event_pool
 
     def has_key(self, name):
         """
@@ -510,13 +512,40 @@ class BarData(object):
         self._data[name] = value
 
     def __getitem__(self, name):
-        return self._data[name]
+        try:
+            return self._data[name]
+        except KeyError:
+            pass
+
+        sid_data = None
+
+        try:
+            trade_event = self._trade_event_pool[name]
+            sid_data = SIDData(trade_event.sid)
+            sid_data.__dict__.update(trade_event.__dict__)
+            self._data[name] = sid_data
+            return sid_data
+        except KeyError:
+            pass
+
+        try:
+            custom_event = self._custom_event_pool[name]
+            if sid_data is not None:
+                sid_data.__dict__.update(custom_event.__dict__)
+            else:
+                sid_data = SIDData(custom_event.sid)
+                sid_data.__dict__.update(custom_event.__dict__)
+                self._data[name] = sid_data
+            return sid_data
+        except KeyError:
+            pass
 
     def __delitem__(self, name):
         del self._data[name]
 
     def __iter__(self):
-        for sid, data in iteritems(self._data):
+        for sid, _ in iteritems(self._trade_event_pool):
+            data = self[sid]
             # Allow contains override to filter out sids.
             if sid in self:
                 if len(data):
@@ -524,7 +553,8 @@ class BarData(object):
 
     def iterkeys(self):
         # Allow contains override to filter out sids.
-        return (sid for sid in iterkeys(self._data) if sid in self)
+        return (sid for sid in iterkeys(self._trade_event_pool)
+                if sid in self)
 
     def keys(self):
         # Allow contains override to filter out sids.
