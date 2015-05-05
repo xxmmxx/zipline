@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from datetime import datetime
-from unittest import TestCase
+from unittest import TestCase, skip
 
 from zipline.utils.test_utils import setup_logger, teardown_logger
 
@@ -173,6 +173,7 @@ class TestBatchTransform(TestCase):
     def tearDown(self):
         teardown_logger(self)
 
+    @skip
     def test_core_functionality(self):
         algo = BatchTransformAlgorithm(sim_params=self.sim_params)
         algo.run(self.source)

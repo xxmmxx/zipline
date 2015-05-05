@@ -512,11 +512,6 @@ class BarData(object):
         self._data[name] = value
 
     def __getitem__(self, name):
-        try:
-            return self._data[name]
-        except KeyError:
-            pass
-
         sid_data = None
 
         try:
@@ -567,8 +562,8 @@ class BarData(object):
         return list(self.itervalues())
 
     def iteritems(self):
-        return ((sid, value) for sid, value
-                in iteritems(self._data)
+        return ((sid, self[sid]) for sid, _
+                in iteritems(self._trade_event_pool)
                 if sid in self)
 
     def items(self):
