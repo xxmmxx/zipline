@@ -280,9 +280,6 @@ class PerformanceTracker(object):
 
         return _dict
 
-    def process_trade(self, event):
-        self.position_tracker.update_last_sale(event)
-
     def process_transaction(self, event):
 
         self.txn_count += 1

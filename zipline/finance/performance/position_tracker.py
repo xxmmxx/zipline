@@ -40,7 +40,6 @@ class PositionTracker(object):
         self.positions.update(positions)
         for sid, pos in iteritems(positions):
             self._position_amounts[sid] = pos.amount
-            self._position_last_sale_prices[sid] = pos.last_sale_price
             # Invalidate cache.
             self._position_values = None  # invalidate cache
 
@@ -88,9 +87,9 @@ class PositionTracker(object):
         if self._position_values is None:
             amounts = self._position_amounts
             if amounts:
-                import pprint; import nose; nose.tools.set_trace()
-                vals = list(map(mul, self._position_amounts.values(),
-                                self._position_last_sale_prices.values()))
+                prices = [self._data_access.last_sale[sid].price
+                          for sid in self._position_amounts]
+                vals = list(map(mul, self._position_amounts.values(), prices))
                 self._position_values = vals
             else:
                 self._position_values = []
