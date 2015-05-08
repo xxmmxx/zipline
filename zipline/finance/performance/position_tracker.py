@@ -4,7 +4,6 @@ from operator import mul
 import logbook
 import numpy as np
 import pandas as pd
-from pandas.lib import checknull
 try:
     # optional cython based OrderedDict
     from cyordereddict import OrderedDict
@@ -87,9 +86,11 @@ class PositionTracker(object):
         if self._position_values is None:
             amounts = self._position_amounts
             if amounts:
-                prices = [self._data_access.last_sale[sid].price
-                          for sid in self._position_amounts]
-                vals = list(map(mul, self._position_amounts.values(), prices))
+                amounts = np.array(self._position_amounts.values(),
+                                   dtype=float)
+                prices = self._data_access.last_sale_prices(
+                    self._position_amounts.keys())
+                vals = amounts * prices
                 self._position_values = vals
             else:
                 self._position_values = []

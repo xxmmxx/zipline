@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import numpy as np
+
 from logbook import Logger, Processor
 from pandas.tslib import normalize_date
 
@@ -28,7 +30,15 @@ log = Logger('Trade Simulation')
 class DataAccess(object):
 
     def __init__(self):
+        # Last known event, keyed by asset.
         self.last_sale = {}
+
+    def last_sale_prices(self, assets):
+        """
+        Returns array (and perhaps array-like down the road)
+        """
+        return np.array([self.last_sale[asset].price for asset in assets],
+                        dtype=float)
 
 
 class AlgorithmSimulator(object):
