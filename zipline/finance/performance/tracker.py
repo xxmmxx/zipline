@@ -85,7 +85,7 @@ class PerformanceTracker(object):
     """
 
     @with_environment()
-    def __init__(self, sim_params, env=None):
+    def __init__(self, sim_params, env=None, data_access=None):
 
         self.sim_params = sim_params
 

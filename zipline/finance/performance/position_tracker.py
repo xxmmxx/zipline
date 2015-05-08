@@ -30,27 +30,10 @@ class PositionTracker(object):
         self.positions = positiondict()
         # Arrays for quick calculations of positions value
         self._position_amounts = OrderedDict()
-        self._position_last_sale_prices = OrderedDict()
         self._unpaid_dividends = pd.DataFrame(
             columns=zp.DIVIDEND_PAYMENT_FIELDS,
         )
         self._positions_store = zp.Positions()
-
-    def update_last_sale(self, event):
-        # NOTE, PerformanceTracker already vetted as TRADE type
-        sid = event.sid
-        if sid not in self.positions:
-            return
-
-        price = event.price
-        if not checknull(price):
-            pos = self.positions[sid]
-            pos.last_sale_date = event.dt
-            pos.last_sale_price = price
-            self._position_last_sale_prices[sid] = price
-            self._position_values = None  # invalidate cache
-        sid = event.sid
-        price = event.price
 
     def update_positions(self, positions):
         # update positions in batch
@@ -86,7 +69,6 @@ class PositionTracker(object):
         position = self.positions[sid]
         position.update(txn)
         self._position_amounts[sid] = position.amount
-        self._position_last_sale_prices[sid] = position.last_sale_price
         self._position_values = None  # invalidate cache
 
     def handle_commission(self, commission):
@@ -104,9 +86,14 @@ class PositionTracker(object):
         self._position_last_sale_prices is changed.
         """
         if self._position_values is None:
-            vals = list(map(mul, self._position_amounts.values(),
-                        self._position_last_sale_prices.values()))
-            self._position_values = vals
+            amounts = self._position_amounts
+            if amounts:
+                import pprint; import nose; nose.tools.set_trace()
+                vals = list(map(mul, self._position_amounts.values(),
+                                self._position_last_sale_prices.values()))
+                self._position_values = vals
+            else:
+                self._position_values = []
         return self._position_values
 
     def calculate_positions_value(self):

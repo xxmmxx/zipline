@@ -25,6 +25,12 @@ from zipline.protocol import (
 log = Logger('Trade Simulation')
 
 
+class DataAccess(object):
+
+    def __init__(self):
+        self.last_sale = {}
+
+
 class AlgorithmSimulator(object):
 
     EMISSION_TO_PERF_KEY_MAP = {
@@ -78,6 +84,9 @@ class AlgorithmSimulator(object):
         mkt_open = self.algo.perf_tracker.market_open
         mkt_close = self.algo.perf_tracker.market_close
 
+        data_access = DataAccess()
+        self.algo.perf_tracker.position_tracker._data_access = data_access
+
         # inject the current algo
         # snapshot time to any log record generated.
         with self.processor.threadbound():
@@ -100,6 +109,7 @@ class AlgorithmSimulator(object):
 
                         elif event.type == DATASOURCE_TYPE.TRADE:
                             self.update_universe(event)
+                            data_access.last_sales[event.sid] = event
                             self.algo.perf_tracker.process_trade(event)
                         elif event.type == DATASOURCE_TYPE.CUSTOM:
                             self.update_universe(event)
@@ -205,10 +215,12 @@ class AlgorithmSimulator(object):
         perf_process_commission = self.algo.perf_tracker.process_commission
         blotter_process_trade = self.algo.blotter.process_trade
         blotter_process_benchmark = self.algo.blotter.process_benchmark
+        data_access = self.algo.perf_tracker.position_tracker._data_access
 
         for event in snapshot:
 
             if event.type == DATASOURCE_TYPE.TRADE:
+                data_access.last_sale[event.sid] = event
                 self.update_universe(event)
                 any_trade_occurred = True
                 if instant_fill:
