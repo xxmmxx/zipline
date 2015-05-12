@@ -196,7 +196,8 @@ class AlgorithmSimulator(object):
         #
         # Done here, to allow for perf_tracker or blotter to be swapped out
         # or changed in between snapshots.
-        perf_process_trade = self.algo.perf_tracker.process_trade
+        tracker_update_last_sale = self.algo.perf_tracker.position_tracker.\
+            update_last_sale
         perf_process_transaction = self.algo.perf_tracker.process_transaction
         perf_process_order = self.algo.perf_tracker.process_order
         perf_process_benchmark = self.algo.perf_tracker.process_benchmark
@@ -220,7 +221,7 @@ class AlgorithmSimulator(object):
                         elif txn.type == DATASOURCE_TYPE.COMMISSION:
                             perf_process_commission(txn)
                         perf_process_order(order)
-                    perf_process_trade(event)
+                    tracker_update_last_sale(event)
 
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
                 benchmark_event_occurred = True
@@ -262,7 +263,7 @@ class AlgorithmSimulator(object):
                         perf_process_transaction(txn)
                     if order is not None:
                         perf_process_order(order)
-                perf_process_trade(event)
+                tracker_update_last_sale(event)
 
         if benchmark_event_occurred:
             return self.get_message(dt)

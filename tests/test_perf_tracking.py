@@ -206,7 +206,7 @@ def calculate_results(host,
         for event in group:
 
             if event.type == zp.DATASOURCE_TYPE.TRADE:
-                perf_tracker.process_trade(event)
+                perf_tracker.position_tracker.update_last_sale(event)
             elif event.type == zp.DATASOURCE_TYPE.DIVIDEND:
                 perf_tracker.process_dividend(event)
             elif event.type == zp.DATASOURCE_TYPE.BENCHMARK:
@@ -1777,7 +1777,7 @@ class TestPerformanceTracker(unittest.TestCase):
         for date, group in grouped_events:
             for event in group:
                 if event.type == zp.DATASOURCE_TYPE.TRADE:
-                    perf_tracker.process_trade(event)
+                    perf_tracker.position_tracker.update_last_sale(event)
                 elif event.type == zp.DATASOURCE_TYPE.ORDER:
                     perf_tracker.process_order(event)
                 elif event.type == zp.DATASOURCE_TYPE.BENCHMARK:
@@ -1891,7 +1891,7 @@ class TestPerformanceTracker(unittest.TestCase):
                 tracker.set_date(date)
                 for event in group:
                     if event.type == zp.DATASOURCE_TYPE.TRADE:
-                        tracker.process_trade(event)
+                        tracker.position_tracker.update_last_sale(event)
                     elif event.type == zp.DATASOURCE_TYPE.BENCHMARK:
                         tracker.process_benchmark(event)
                     elif event.type == zp.DATASOURCE_TYPE.ORDER:
