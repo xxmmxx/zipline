@@ -53,7 +53,7 @@ class Blotter(object):
     def __init__(self):
         self.transact = transact_partial(VolumeShareSlippage(), PerShare())
         # these orders are aggregated by sid
-        self.open_orders = defaultdict(list)
+        self.open_orders = {} # sid -> list
         # keep a dict of orders by their own id
         self.orders = {}
         # holding orders that have come in since the last
@@ -114,7 +114,11 @@ class Blotter(object):
             id=order_id
         )
 
-        self.open_orders[order.sid].append(order)
+        try:
+            sid_orders = self.open_orders[order.sid]
+        except KeyError:
+            sid_orders = self.open_orders[order.sid] = []
+        sid_orders.append(order)
         self.orders[order.id] = order
         self.new_orders.append(order)
 
@@ -195,9 +199,6 @@ class Blotter(object):
         yield
 
     def process_trade(self, trade_event):
-
-        if trade_event.sid not in self.open_orders:
-            return
 
         if trade_event.volume < 1:
             # there are zero volume trade_events bc some stocks trade

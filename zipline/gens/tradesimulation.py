@@ -205,6 +205,9 @@ class AlgorithmSimulator(object):
         perf_process_commission = self.algo.perf_tracker.process_commission
         blotter_process_trade = self.algo.blotter.process_trade
         blotter_process_benchmark = self.algo.blotter.process_benchmark
+        blotter_open_orders = self.algo.blotter.open_orders
+
+        has_open_orders = bool(blotter_open_orders)
 
         for event in snapshot:
 
@@ -214,12 +217,14 @@ class AlgorithmSimulator(object):
                 if instant_fill:
                     events_to_be_processed.append(event)
                 else:
-                    for txn, order in blotter_process_trade(event):
-                        if txn.type == DATASOURCE_TYPE.TRANSACTION:
-                            perf_process_transaction(txn)
-                        elif txn.type == DATASOURCE_TYPE.COMMISSION:
-                            perf_process_commission(txn)
-                        perf_process_order(order)
+                    if has_open_orders:
+                        if event.sid in blotter_open_orders:
+                            for txn, order in blotter_process_trade(event):
+                                if txn.type == DATASOURCE_TYPE.TRANSACTION:
+                                    perf_process_transaction(txn)
+                                elif txn.type == DATASOURCE_TYPE.COMMISSION:
+                                    perf_process_commission(txn)
+                                perf_process_order(order)
                     perf_process_trade(event)
 
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
@@ -257,11 +262,12 @@ class AlgorithmSimulator(object):
             # process the event stream to fill user orders based on the events
             # from this snapshot.
             for event in events_to_be_processed:
-                for txn, order in blotter_process_trade(event):
-                    if txn is not None:
-                        perf_process_transaction(txn)
-                    if order is not None:
-                        perf_process_order(order)
+                if event.sid in blotter_open_orders:
+                    for txn, order in blotter_process_trade(event):
+                        if txn is not None:
+                            perf_process_transaction(txn)
+                        if order is not None:
+                            perf_process_order(order)
                 perf_process_trade(event)
 
         if benchmark_event_occurred:
