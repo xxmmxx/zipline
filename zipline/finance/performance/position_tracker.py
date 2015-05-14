@@ -18,7 +18,7 @@ from zipline.utils.serialization_utils import (
 )
 
 import zipline.protocol as zp
-from . position import positiondict
+from . position import Position
 
 log = logbook.Logger('Performance')
 
@@ -26,8 +26,8 @@ log = logbook.Logger('Performance')
 class PositionTracker(object):
 
     def __init__(self):
-        # sid => position object
-        self.positions = positiondict()
+        # sid => Position object
+        self.positions = {}
         # Arrays for quick calculations of positions value
         self._position_amounts = OrderedDict()
         self._position_last_sale_prices = OrderedDict()
@@ -83,7 +83,10 @@ class PositionTracker(object):
         # ----------------
 
         sid = txn.sid
-        position = self.positions[sid]
+        try:
+            position = self.positions[sid]
+        except KeyError:
+            position = self.positions[sid] = Position(sid)
         position.update(txn)
         self._position_amounts[sid] = position.amount
         self._position_last_sale_prices[sid] = position.last_sale_price
@@ -202,9 +205,10 @@ class PositionTracker(object):
         for _, row in stock_payments.iterrows():
             stock = row['payment_sid']
             share_count = row['share_count']
-            # note we create a Position for stock dividend if we don't
-            # already own the security
-            position = self.positions[stock]
+            try:
+                position = self.positions[stock]
+            except KeyError:
+                position = self.positions[stock] = Position(stock)
 
             position.amount += share_count
             self._position_amounts[stock] = position.amount
@@ -234,8 +238,6 @@ class PositionTracker(object):
                     pass
                 continue
 
-            # Note that this will create a position if we don't currently have
-            # an entry
             position = positions[sid]
             position.amount = pos.amount
             position.cost_basis = pos.cost_basis
@@ -266,7 +268,7 @@ class PositionTracker(object):
         if version < OLDEST_SUPPORTED_STATE:
             raise BaseException("PositionTracker saved state is too old.")
 
-        self.positions = positiondict()
+        self.positions = {}
         # note that positions_store is temporary and gets regened from
         # .positions
         self._positions_store = zp.Positions()

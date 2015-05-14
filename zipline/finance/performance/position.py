@@ -230,11 +230,3 @@ last_sale_price: {last_sale_price}"
             raise BaseException("Position saved state is too old.")
 
         self.__dict__.update(state)
-
-
-class positiondict(dict):
-
-    def __missing__(self, key):
-        pos = Position(key)
-        self[key] = pos
-        return pos
