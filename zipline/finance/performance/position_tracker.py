@@ -229,7 +229,8 @@ class PositionTracker(object):
             position = positions[sid]
             position.amount = pos.amount
             position.cost_basis = pos.cost_basis
-            position.last_sale_price = pos.last_sale_price
+            position.last_sale_price = self._data_access.last_sale_prices(
+                [sid])[0]
         return positions
 
     def get_positions_list(self):

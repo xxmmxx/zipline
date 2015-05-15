@@ -214,13 +214,13 @@ class AlgorithmSimulator(object):
                 if instant_fill:
                     events_to_be_processed.append(event)
                 else:
+                    perf_process_trade(event)
                     for txn, order in blotter_process_trade(event):
                         if txn.type == DATASOURCE_TYPE.TRANSACTION:
                             perf_process_transaction(txn)
                         elif txn.type == DATASOURCE_TYPE.COMMISSION:
                             perf_process_commission(txn)
                         perf_process_order(order)
-                    perf_process_trade(event)
 
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
                 benchmark_event_occurred = True
@@ -257,12 +257,12 @@ class AlgorithmSimulator(object):
             # process the event stream to fill user orders based on the events
             # from this snapshot.
             for event in events_to_be_processed:
+                perf_process_trade(event)
                 for txn, order in blotter_process_trade(event):
                     if txn is not None:
                         perf_process_transaction(txn)
                     if order is not None:
                         perf_process_order(order)
-                perf_process_trade(event)
 
         if benchmark_event_occurred:
             return self.get_message(dt)
