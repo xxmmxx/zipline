@@ -25,9 +25,6 @@ class DataAccess(object):
     def last_sale_prices(self, assets):
         """
         Returns np.array
-
-        dt, is currently ignored, but will be required when last_sale is
-        no longer used.
         """
         return np.array([self.last_sale[asset].price for asset in assets],
                         dtype=float)
@@ -35,9 +32,5 @@ class DataAccess(object):
     def last_sale_dates(self, assets):
         """
         Returns np.array
-
-        dt, is currently ignored, but will be required when last_sale is
-        no longer used.
         """
-        return np.array([self.last_sale[asset].dt for asset in assets],
-                        dtype=float)
+        return {self.last_sale[asset].dt for asset in assets}
