@@ -1,10 +1,8 @@
 from __future__ import division
-from operator import mul
 
 import logbook
 import numpy as np
 import pandas as pd
-from pandas.lib import checknull
 try:
     # optional cython based OrderedDict
     from cyordereddict import OrderedDict
@@ -16,6 +14,8 @@ from six.moves import map, filter
 from zipline.utils.serialization_utils import (
     VERSION_LABEL
 )
+from zipline.data.data_access import DataAccess
+
 
 import zipline.protocol as zp
 from . position import positiondict
@@ -36,21 +36,12 @@ class PositionTracker(object):
         )
         self._positions_store = zp.Positions()
 
-    def update_last_sale(self, event):
-        # NOTE, PerformanceTracker already vetted as TRADE type
-        sid = event.sid
-        if sid not in self.positions:
-            return
+        # Will need to be more globally shared, but for now only used in this
+        # class.
+        self._data_access = DataAccess()
 
-        price = event.price
-        if not checknull(price):
-            pos = self.positions[sid]
-            pos.last_sale_date = event.dt
-            pos.last_sale_price = price
-            self._position_last_sale_prices[sid] = price
-            self._position_values = None  # invalidate cache
-        sid = event.sid
-        price = event.price
+    def update_last_sale(self, event):
+        self._data_access.last_sale[event.sid] = event
 
     def update_positions(self, positions):
         # update positions in batch
@@ -86,8 +77,6 @@ class PositionTracker(object):
         position = self.positions[sid]
         position.update(txn)
         self._position_amounts[sid] = position.amount
-        self._position_last_sale_prices[sid] = position.last_sale_price
-        self._position_values = None  # invalidate cache
 
     def handle_commission(self, commission):
         # Adjust the cost basis of the stock if we own it
@@ -95,19 +84,22 @@ class PositionTracker(object):
             self.positions[commission.sid].\
                 adjust_commission_cost_basis(commission)
 
-    _position_values = None
-
     @property
     def position_values(self):
         """
         Invalidate any time self._position_amounts or
         self._position_last_sale_prices is changed.
         """
-        if self._position_values is None:
-            vals = list(map(mul, self._position_amounts.values(),
-                        self._position_last_sale_prices.values()))
-            self._position_values = vals
-        return self._position_values
+        amounts = self._position_amounts
+        if amounts:
+            amounts = np.array(self._position_amounts.values(),
+                               dtype=float)
+            prices = self._data_access.last_sale_prices(
+                self._position_amounts.keys())
+            vals = amounts * prices
+        else:
+            vals = np.array([])
+        return vals
 
     def calculate_positions_value(self):
         if len(self.position_values) == 0:
@@ -140,9 +132,7 @@ class PositionTracker(object):
             position = self.positions[split.sid]
             leftover_cash = position.handle_split(split)
             self._position_amounts[split.sid] = position.amount
-            self._position_last_sale_prices[split.sid] = \
-                position.last_sale_price
-            self._position_values = None  # invalidate cache
+            self._data_access.last_split_ratio[split.sid] = split.ratio
             return leftover_cash
 
     def _maybe_earn_dividend(self, dividend):
