@@ -198,7 +198,6 @@ class PositionTracker(object):
 
             position.amount += share_count
             self._position_amounts[stock] = position.amount
-            self._position_last_sale_prices[stock] = position.last_sale_price
 
         # Add cash equal to the net cash payed from all dividends.  Note that
         # "negative cash" is effectively paid if we're short a security,
@@ -237,6 +236,8 @@ class PositionTracker(object):
         positions = []
         for sid, pos in iteritems(self.positions):
             if pos.amount != 0:
+                pos.last_sale_price = self._data_access.last_sale_prices(
+                    [sid])[0]
                 positions.append(pos.to_dict())
         return positions
 

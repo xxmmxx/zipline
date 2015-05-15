@@ -1509,20 +1509,22 @@ shares in position"
         pp = perf.PerformancePeriod(1000.0)
         pp.position_tracker = pt
 
+        for trade in trades:
+            pt.update_last_sale(trade)
+
         average_cost = 0
         for i, txn in enumerate(transactions):
             pt.execute_transaction(txn)
             pp.handle_execution(txn)
             average_cost = (average_cost * i + txn.price) / (i + 1)
-            self.assertEqual(pp.positions[1].cost_basis, average_cost)
-
-        for trade in trades:
-            pt.update_last_sale(trade)
+            positions = pp.get_positions()
+            self.assertEqual(positions[1].cost_basis, average_cost)
 
         pp.calculate_performance()
 
+        positions = pp.get_positions()
         self.assertEqual(
-            pp.positions[1].last_sale_price,
+            positions[1].last_sale_price,
             trades[-1].price,
             "should have a last sale of 12, got {val}".format(
                 val=pp.positions[1].last_sale_price)
@@ -1557,11 +1559,12 @@ shares in position"
         pt.update_last_sale(down_tick)
 
         pp.calculate_performance()
+        positions = pp.get_positions()
         self.assertEqual(
-            pp.positions[1].last_sale_price,
+            positions[1].last_sale_price,
             10,
             "should have a last sale of 10, was {val}".format(
-                val=pp.positions[1].last_sale_price)
+                val=positions[1].last_sale_price)
         )
 
         self.assertEqual(
@@ -1576,29 +1579,31 @@ shares in position"
         pp3 = perf.PerformancePeriod(1000.0)
         pp3.position_tracker = pt3
 
+        trades.append(down_tick)
+        for trade in trades:
+            pt3.update_last_sale(trade)
+
         average_cost = 0
         for i, txn in enumerate(transactions):
             pt3.execute_transaction(txn)
             pp3.handle_execution(txn)
             average_cost = (average_cost * i + txn.price) / (i + 1)
-            self.assertEqual(pp3.positions[1].cost_basis, average_cost)
+            positions = pp3.get_positions()
+            self.assertEqual(positions[1].cost_basis, average_cost)
 
         pt3.execute_transaction(sale_txn)
         pp3.handle_execution(sale_txn)
 
-        trades.append(down_tick)
-        for trade in trades:
-            pt3.update_last_sale(trade)
-
         pp3.calculate_performance()
+        positions = pp3.get_positions()
         self.assertEqual(
-            pp3.positions[1].last_sale_price,
+            positions[1].last_sale_price,
             10,
             "should have a last sale of 10"
         )
 
         self.assertEqual(
-            pp3.positions[1].cost_basis,
+            positions[1].cost_basis,
             11,
             "should have a cost basis of 11"
         )
