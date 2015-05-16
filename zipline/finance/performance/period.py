@@ -186,7 +186,7 @@ class PerformancePeriod(object):
         setattr(self, field, value)
 
     def calculate_performance(self):
-        self.ending_value = self.calculate_positions_value()
+        self.ending_value = self.position_tracker.calculate_positions_value()
 
         total_at_start = self.starting_cash + self.starting_value
         self.ending_cash = self.starting_cash + self.period_cash_flow
@@ -231,10 +231,6 @@ class PerformancePeriod(object):
     @property
     def position_amounts(self):
         return self.position_tracker.position_amounts
-
-    @position_proxy
-    def calculate_positions_value(self):
-        raise ProxyError()
 
     @position_proxy
     def _longs_count(self):
