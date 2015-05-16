@@ -233,10 +233,6 @@ class PerformancePeriod(object):
         return self.position_tracker.position_amounts
 
     @position_proxy
-    def _longs_count(self):
-        raise ProxyError()
-
-    @position_proxy
     def _long_exposure(self):
         raise ProxyError()
 
@@ -294,7 +290,7 @@ class PerformancePeriod(object):
             'net_leverage': self._net_leverage(),
             'short_exposure': self._short_exposure(),
             'long_exposure': self._long_exposure(),
-            'longs_count': self._longs_count(),
+            'longs_count': self.position_tracker._longs_count(),
             'shorts_count': self._shorts_count()
         }
 
