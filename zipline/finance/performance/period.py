@@ -95,24 +95,6 @@ log = logbook.Logger('Performance')
 TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
 
 
-def position_proxy(func):
-    def _proxied(self, *args, **kwargs):
-        meth_name = func.__name__
-        meth = getattr(self.position_tracker, meth_name)
-        return meth(*args, **kwargs)
-    return _proxied
-
-
-class ProxyError(Exception):
-    def __init__(self):
-        import inspect
-
-        meth_name = inspect.stack()[1][3]
-        TEMPLATE = "{meth_name} should have been proxied to position_tracker."
-        msg = TEMPLATE.format(meth_name=meth_name)
-        super(ProxyError, self).__init__(msg)
-
-
 class PerformancePeriod(object):
 
     def __init__(
@@ -232,43 +214,23 @@ class PerformancePeriod(object):
     def position_amounts(self):
         return self.position_tracker.position_amounts
 
-    @position_proxy
-    def _long_exposure(self):
-        raise ProxyError()
-
-    @position_proxy
-    def _shorts_count(self):
-        raise ProxyError()
-
-    @position_proxy
-    def _short_exposure(self):
-        raise ProxyError()
-
-    @position_proxy
-    def _gross_exposure(self):
-        raise ProxyError()
-
-    @position_proxy
-    def _net_exposure(self):
-        raise ProxyError()
-
     @property
     def _net_liquidation_value(self):
         return self.ending_cash + \
-            self._long_exposure() + \
-            self._short_exposure()
+            self.position_tracker._long_exposure() + \
+            self.position_tracker._short_exposure()
 
     def _gross_leverage(self):
         net_liq = self._net_liquidation_value
         if net_liq != 0:
-            return self._gross_exposure() / net_liq
+            return self.position_tracker._gross_exposure() / net_liq
 
         return np.inf
 
     def _net_leverage(self):
         net_liq = self._net_liquidation_value
         if net_liq != 0:
-            return self._net_exposure() / net_liq
+            return self.position_tracker._net_exposure() / net_liq
 
         return np.inf
 
@@ -288,10 +250,10 @@ class PerformancePeriod(object):
             'period_close': self.period_close,
             'gross_leverage': self._gross_leverage(),
             'net_leverage': self._net_leverage(),
-            'short_exposure': self._short_exposure(),
-            'long_exposure': self._long_exposure(),
+            'short_exposure': self.position_tracker._short_exposure(),
+            'long_exposure': self.position_tracker._long_exposure(),
             'longs_count': self.position_tracker._longs_count(),
-            'shorts_count': self._shorts_count()
+            'shorts_count': self.position_tracker._shorts_count()
         }
 
         return rval
@@ -408,10 +370,6 @@ class PerformancePeriod(object):
         account.net_liquidation = \
             getattr(self, 'net_liquidation', self._net_liquidation_value)
         return account
-
-    @position_proxy
-    def get_positions_list(self):
-        raise ProxyError()
 
     def __getstate__(self):
         state_dict = {k: v for k, v in iteritems(self.__dict__)
