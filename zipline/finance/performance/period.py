@@ -307,7 +307,7 @@ class PerformancePeriod(object):
         rval = self.__core_dict()
 
         if self.serialize_positions:
-            positions = self.get_positions_list()
+            positions = self.position_tracker.get_positions_list()
             rval['positions'] = positions
 
         # we want the key to be absent, not just empty
@@ -362,7 +362,7 @@ class PerformancePeriod(object):
         portfolio.returns = self.returns
         portfolio.cash = self.ending_cash
         portfolio.start_date = self.period_open
-        portfolio.positions = self.get_positions()
+        portfolio.positions = self.position_tracker.get_positions()
         portfolio.positions_value = self.ending_value
         return portfolio
 
@@ -408,10 +408,6 @@ class PerformancePeriod(object):
         account.net_liquidation = \
             getattr(self, 'net_liquidation', self._net_liquidation_value)
         return account
-
-    @position_proxy
-    def get_positions(self):
-        raise ProxyError()
 
     @position_proxy
     def get_positions_list(self):
