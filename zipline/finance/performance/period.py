@@ -126,6 +126,14 @@ class PerformancePeriod(object):
         self._account_store = zp.Account()
         self.serialize_positions = serialize_positions
 
+        self.gross_leverage = 0.0
+        self.net_leverage = 0.0
+        self.short_exposure = 0.0
+        self.long_exposure = 0.0
+        self.longs_count = 0.0
+        self.shorts_count = 0.0
+        self.net_liquidation_value = 0.0
+
     _position_tracker = None
 
     @property
@@ -234,6 +242,14 @@ class PerformancePeriod(object):
 
         return np.inf
 
+    def snapshot(self):
+        self.gross_leverage = self._gross_leverage()
+        self.net_leverage = self._net_leverage()
+        self.short_exposure = self.position_tracker._short_exposure()
+        self.long_exposure = self.position_tracker._long_exposure()
+        self.longs_count = self.position_tracker._longs_count()
+        self.shorts_count = self.position_tracker._shorts_count()
+
     def __core_dict(self):
         rval = {
             'ending_value': self.ending_value,
@@ -248,12 +264,12 @@ class PerformancePeriod(object):
             'returns': self.returns,
             'period_open': self.period_open,
             'period_close': self.period_close,
-            'gross_leverage': self._gross_leverage(),
-            'net_leverage': self._net_leverage(),
-            'short_exposure': self.position_tracker._short_exposure(),
-            'long_exposure': self.position_tracker._long_exposure(),
-            'longs_count': self.position_tracker._longs_count(),
-            'shorts_count': self.position_tracker._shorts_count()
+            'gross_leverage': self.gross_leverage,
+            'net_leverage': self.net_leverage,
+            'short_exposure': self.short_exposure,
+            'long_exposure': self.long_exposure,
+            'longs_count': self.longs_count,
+            'shorts_count': self.shorts_count,
         }
 
         return rval
@@ -365,10 +381,10 @@ class PerformancePeriod(object):
         account.day_trades_remaining = \
             getattr(self, 'day_trades_remaining', float('inf'))
         account.leverage = \
-            getattr(self, 'leverage', self._gross_leverage())
-        account.net_leverage = self._net_leverage()
+            getattr(self, 'leverage', self.gross_leverage)
+        account.net_leverage = self.net_leverage
         account.net_liquidation = \
-            getattr(self, 'net_liquidation', self._net_liquidation_value)
+            getattr(self, 'net_liquidation', self.net_liquidation_value)
         return account
 
     def __getstate__(self):

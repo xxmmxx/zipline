@@ -424,6 +424,12 @@ class PerformanceTracker(object):
         """
         self.update_performance()
         completed_date = normalize_date(self.market_close)
+
+        # Take a snapshot of our current performance to return to the
+        # browser.
+        self.cumulative_performance.snapshot()
+        daily_update = self.to_dict()
+
         account = self.get_account(True)
 
         # update risk metrics for cumulative performance
@@ -435,10 +441,6 @@ class PerformanceTracker(object):
 
         # increment the day counter before we move markers forward.
         self.day_count += 1.0
-
-        # Take a snapshot of our current performance to return to the
-        # browser.
-        daily_update = self.to_dict()
 
         # On the last day of the test, don't create tomorrow's performance
         # period.  We may not be able to find the next trading day if we're at
