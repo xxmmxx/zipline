@@ -103,35 +103,9 @@ class PositionTracker(object):
         Invalidate any time self._position_amounts or
         self._position_last_sale_prices is changed.
         """
-        if self._position_values is None:
-            vals = list(map(mul, self._position_amounts.values(),
+        import pprint; import nose; nose.tools.set_trace()
+        return list(map(mul, self._position_amounts.values(),
                         self._position_last_sale_prices.values()))
-            self._position_values = vals
-        return self._position_values
-
-    def calculate_positions_value(self):
-        if len(self.position_values) == 0:
-            return np.float64(0)
-
-        return sum(self.position_values)
-
-    def _longs_count(self):
-        return sum(map(lambda x: x > 0, self.position_values))
-
-    def _long_exposure(self):
-        return sum(filter(lambda x: x > 0, self.position_values))
-
-    def _shorts_count(self):
-        return sum(map(lambda x: x < 0, self.position_values))
-
-    def _short_exposure(self):
-        return sum(filter(lambda x: x < 0, self.position_values))
-
-    def _gross_exposure(self):
-        return self._long_exposure() + abs(self._short_exposure())
-
-    def _net_exposure(self):
-        return self.calculate_positions_value()
 
     def handle_split(self, split):
         if split.sid in self.positions:

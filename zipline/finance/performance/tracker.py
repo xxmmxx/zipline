@@ -422,12 +422,13 @@ class PerformanceTracker(object):
         Function called after handle_data when running with daily emission
         rate.
         """
+        self.cumulative_performance.snapshot()
+
         self.update_performance()
         completed_date = normalize_date(self.market_close)
 
         # Take a snapshot of our current performance to return to the
         # browser.
-        self.cumulative_performance.snapshot()
         daily_update = self.to_dict()
 
         account = self.get_account(True)

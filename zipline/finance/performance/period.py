@@ -95,6 +95,51 @@ log = logbook.Logger('Performance')
 TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
 
 
+def calc_net_liquidation_value(ending_cash, long_exposure, short_exposure):
+    return ending_cash + long_exposure + short_exposure
+
+
+def calc_gross_leverage(net_liq, gross_exposure):
+    if net_liq != 0:
+        return gross_exposure / net_liq
+
+    return np.inf
+
+
+def calc_net_leverage(net_liq, net_exposure):
+    if net_liq != 0:
+        return net_exposure / net_liq
+
+    return np.inf
+
+
+def calc_longs_count(position_values):
+    return sum(map(lambda x: x > 0, position_values))
+
+
+def calc_long_exposure(position_values):
+    return sum(filter(lambda x: x > 0, position_values))
+
+
+def calc_shorts_count(position_values):
+    return sum(map(lambda x: x < 0, position_values))
+
+
+def calc_short_exposure(position_values):
+    return sum(filter(lambda x: x > 0, position_values))
+
+
+def calc_net_exposure(position_values):
+    if len(position_values) == 0:
+        return np.float64(0)
+
+    return sum(position_values)
+
+
+def calc_gross_exposure(long_exposure, short_exposure):
+    return long_exposure + short_exposure
+
+
 class PerformancePeriod(object):
 
     def __init__(
@@ -128,6 +173,7 @@ class PerformancePeriod(object):
 
         self.gross_leverage = 0.0
         self.net_leverage = 0.0
+        self.net_exposure = 0.0
         self.short_exposure = 0.0
         self.long_exposure = 0.0
         self.longs_count = 0.0
@@ -176,7 +222,7 @@ class PerformancePeriod(object):
         setattr(self, field, value)
 
     def calculate_performance(self):
-        self.ending_value = self.position_tracker.calculate_positions_value()
+        self.ending_value = self.net_exposure
 
         total_at_start = self.starting_cash + self.starting_value
         self.ending_cash = self.starting_cash + self.period_cash_flow
@@ -222,33 +268,17 @@ class PerformancePeriod(object):
     def position_amounts(self):
         return self.position_tracker.position_amounts
 
-    @property
-    def _net_liquidation_value(self):
-        return self.ending_cash + \
-            self.position_tracker._long_exposure() + \
-            self.position_tracker._short_exposure()
-
-    def _gross_leverage(self):
-        net_liq = self._net_liquidation_value
-        if net_liq != 0:
-            return self.position_tracker._gross_exposure() / net_liq
-
-        return np.inf
-
-    def _net_leverage(self):
-        net_liq = self._net_liquidation_value
-        if net_liq != 0:
-            return self.position_tracker._net_exposure() / net_liq
-
-        return np.inf
-
     def snapshot(self):
-        self.gross_leverage = self._gross_leverage()
-        self.net_leverage = self._net_leverage()
-        self.short_exposure = self.position_tracker._short_exposure()
-        self.long_exposure = self.position_tracker._long_exposure()
-        self.longs_count = self.position_tracker._longs_count()
-        self.shorts_count = self.position_tracker._shorts_count()
+        position_values = self.position_tracker.position_values
+        self.long_exposure = calc_long_exposure(position_values)
+        self.short_exposure = calc_short_exposure(position_values)
+        self.net_exposure = calc_net_exposure(position_values)
+        self.gross_leverage = calc_gross_leverage(
+            self.net_liquidation_value, self.net_exposure)
+        self.net_leverage = calc_net_leverage(self.net_liquidation_value,
+                                              self.net_exposure)
+        self.longs_count = calc_longs_count(position_values)
+        self.shorts_count = calc_shorts_count(position_values)
 
     def __core_dict(self):
         rval = {
