@@ -48,7 +48,6 @@ class PositionTracker(object):
             pos.last_sale_date = event.dt
             pos.last_sale_price = price
             self._position_last_sale_prices[sid] = price
-            self._position_values = None  # invalidate cache
         sid = event.sid
         price = event.price
 
@@ -58,8 +57,6 @@ class PositionTracker(object):
         for sid, pos in iteritems(positions):
             self._position_amounts[sid] = pos.amount
             self._position_last_sale_prices[sid] = pos.last_sale_price
-            # Invalidate cache.
-            self._position_values = None  # invalidate cache
 
     def update_position(self, sid, amount=None, last_sale_price=None,
                         last_sale_date=None, cost_basis=None):
@@ -68,11 +65,9 @@ class PositionTracker(object):
         if amount is not None:
             pos.amount = amount
             self._position_amounts[sid] = amount
-            self._position_values = None  # invalidate cache
         if last_sale_price is not None:
             pos.last_sale_price = last_sale_price
             self._position_last_sale_prices[sid] = last_sale_price
-            self._position_values = None  # invalidate cache
         if last_sale_date is not None:
             pos.last_sale_date = last_sale_date
         if cost_basis is not None:
@@ -87,7 +82,6 @@ class PositionTracker(object):
         position.update(txn)
         self._position_amounts[sid] = position.amount
         self._position_last_sale_prices[sid] = position.last_sale_price
-        self._position_values = None  # invalidate cache
 
     def handle_commission(self, commission):
         # Adjust the cost basis of the stock if we own it
@@ -103,7 +97,6 @@ class PositionTracker(object):
         Invalidate any time self._position_amounts or
         self._position_last_sale_prices is changed.
         """
-        import pprint; import nose; nose.tools.set_trace()
         return list(map(mul, self._position_amounts.values(),
                         self._position_last_sale_prices.values()))
 
@@ -116,7 +109,6 @@ class PositionTracker(object):
             self._position_amounts[split.sid] = position.amount
             self._position_last_sale_prices[split.sid] = \
                 position.last_sale_price
-            self._position_values = None  # invalidate cache
             return leftover_cash
 
     def _maybe_earn_dividend(self, dividend):
