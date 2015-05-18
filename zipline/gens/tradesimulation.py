@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import collections
+
 from logbook import Logger, Processor
 from pandas.tslib import normalize_date
 
@@ -206,46 +208,70 @@ class AlgorithmSimulator(object):
         blotter_process_trade = self.algo.blotter.process_trade
         blotter_process_benchmark = self.algo.blotter.process_benchmark
 
+        trades = []
+        splits = None
+        dividends = None
+        customs = None
+        benchmark = None
+
         for event in snapshot:
-
             if event.type == DATASOURCE_TYPE.TRADE:
-                self.update_universe(event)
-                any_trade_occurred = True
-                if instant_fill:
-                    events_to_be_processed.append(event)
-                else:
-                    for txn, order in blotter_process_trade(event):
-                        if txn.type == DATASOURCE_TYPE.TRANSACTION:
-                            perf_process_transaction(txn)
-                        elif txn.type == DATASOURCE_TYPE.COMMISSION:
-                            perf_process_commission(txn)
-                        perf_process_order(order)
-                    perf_process_trade(event)
-
+                trades.append(event)
             elif event.type == DATASOURCE_TYPE.BENCHMARK:
-                benchmark_event_occurred = True
-                perf_process_benchmark(event)
-                for txn, order in blotter_process_benchmark(event):
+                benchmark = event
+            elif event.type == DATASOURCE_TYPE.SPLIT:
+                if splits is None:
+                    splits = []
+                splits.append(event)
+            elif event.type == DATASOURCE_TYPE.CUSTOM:
+                if customs is None:
+                    customs = []
+                customs.append(event)
+            elif event.type == DATASOURCE_TYPE.DIVIDEND:
+                if dividends is None:
+                    dividends = []
+                dividends.append(event)
+            else:
+                raise log.warn("Unrecognized event=%s".format(event))
+
+        for event in trades:
+            self.update_universe(event)
+            any_trade_occurred = True
+            if instant_fill:
+                events_to_be_processed.append(event)
+            else:
+                for txn, order in blotter_process_trade(event):
                     if txn.type == DATASOURCE_TYPE.TRANSACTION:
                         perf_process_transaction(txn)
                     elif txn.type == DATASOURCE_TYPE.COMMISSION:
                         perf_process_commission(txn)
                     perf_process_order(order)
+                perf_process_trade(event)
 
-            elif event.type == DATASOURCE_TYPE.CUSTOM:
+        if benchmark is not None:
+            benchmark_event_occurred = True
+            perf_process_benchmark(benchmark)
+            for txn, order in blotter_process_benchmark(benchmark):
+                if txn.type == DATASOURCE_TYPE.TRANSACTION:
+                    perf_process_transaction(txn)
+                elif txn.type == DATASOURCE_TYPE.COMMISSION:
+                    perf_process_commission(txn)
+                perf_process_order(order)
+
+        if customs is not None:
+            for event in customs:
                 self.update_universe(event)
 
-            elif event.type == DATASOURCE_TYPE.SPLIT:
+        if splits is not None:
+            for event in splits:
                 # process_split is not assigned to a variable since it is
                 # called rarely compared to the other event processors.
                 self.algo.blotter.process_split(event)
                 perf_process_split(event)
 
-            elif event.type == DATASOURCE_TYPE.DIVIDEND:
+        if dividends is not None:
+            for event in dividends:
                 perf_process_dividend(event)
-
-            else:
-                raise log.warn("Unrecognized event=%s".format(event))
 
         if any_trade_occurred:
             new_orders = self._call_handle_data()
