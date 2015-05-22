@@ -93,10 +93,10 @@ class PerformanceTracker(object):
         self.period_start = self.sim_params.period_start
         self.period_end = self.sim_params.period_end
         self.last_close = self.sim_params.last_close
-        first_open = self.sim_params.first_open
-        self.day = first_open.tz_convert(trading.environment.exchange_tz)
-        self.day = pd.Timestamp(datetime(self.day.year, self.day.month,
-                                         self.day.day), tz='UTC')
+        first_open = self.sim_params.first_open.tz_convert(
+            trading.environment.exchange_tz)
+        self.day = pd.Timestamp(datetime(first_open.year, first_open.month,
+                                         first_open.day), tz='UTC')
         self.market_open, self.market_close = \
             trading.environment.get_open_and_close(self.day)
         self.total_days = self.sim_params.days_in_period
@@ -427,7 +427,7 @@ class PerformanceTracker(object):
         rate.
         """
         self.update_performance()
-        completed_date = normalize_date(self.day)
+        completed_date = self.day
         account = self.get_account(True)
 
         # update risk metrics for cumulative performance
