@@ -40,6 +40,8 @@ class DailyEquityLoader(DataLoader):
             data_arrays[col] = np.ndarray(
                 shape=(nrows, ncols),
                 dtype=COLUMN_TYPES[col])
+            if data_arrays[col].dtype == np.float64:
+                data_arrays[col][:] = np.nan
 
         raw_data = {}
         for col in columns:
@@ -64,6 +66,7 @@ class DailyEquityLoader(DataLoader):
 
                 if col != 'volume':
                     asset_data = asset_data * 0.001
+                    asset_data[asset_data == 0.0] = np.nan
 
                 data_arrays[col][:, i] = asset_data
 
