@@ -5,6 +5,7 @@ import pandas as pd
 
 import bcolz
 
+
 def build_daily_equity_index(table, trading_days):
     sids = table['sid'][:]
     days = table['day'][:]
