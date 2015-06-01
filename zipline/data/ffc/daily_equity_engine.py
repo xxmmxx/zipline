@@ -87,6 +87,10 @@ if __name__ == "__main__":
 
     dates = env.trading_days[mask]
 
+    # generated from start_pos.keys()[0:8000]
+    d = shelve.open('test_sids.shelf')
+    assets = d['test_sids']
+
     loader = DailyEquityLoader("./equity_daily_bars.bcolz",
                                "./daily_equity_index.shelf",
                                trading_days=td[td >= min_date])
@@ -94,7 +98,7 @@ if __name__ == "__main__":
     result = loader.load_adjusted_array(
         ['close', 'volume'],
         dates,
-        [2, 24],
+        assets,
     )
 
     assert True
