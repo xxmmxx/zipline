@@ -2,15 +2,9 @@ import shelve
 
 import pandas as pd
 
-import bcolz
+import numpy as np
 
-from zipline.data.baseloader import DataLoader
 from zipline.data.ffc.daily_equity_loader import DailyEquityLoader
-
-from zipline.data.adjusted_array import (
-    adjusted_array,
-    NOMASK,
-)
 
 if __name__ == "__main__":
     import zipline.finance.trading
@@ -26,7 +20,7 @@ if __name__ == "__main__":
 
     # generated from start_pos.keys()[0:8000]
     d = shelve.open('test_sids.shelf')
-    assets = d['test_sids']
+    assets = np.array(d['test_sids'], dtype=np.uint32)
 
     loader = DailyEquityLoader("./equity_daily_bars.bcolz",
                                "./daily_equity_index.shelf",

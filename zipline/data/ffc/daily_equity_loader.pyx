@@ -30,11 +30,11 @@ class DailyEquityLoader(DataLoader):
         self.daily_bar_index = shelve.open(daily_index_path)
         self.trading_days = trading_days
 
-    def load_adjusted_array(self, columns, dates, assets):
+    def load_adjusted_array(self, columns, dates, np.uint32_t[:] assets):
         """
         Load each column with self.make_column.
         """
-        nrows = len(dates)
+        nrows = dates.shape[0]
         ncols = len(assets)
 
         data_arrays = {}
