@@ -11,7 +11,6 @@ from zipline.data.adjusted_array import (
     adjusted_array,
     NOMASK,
 )
-from zipline.data.baseloader import DataLoader
 
 
 COLUMN_TYPES = {
@@ -23,9 +22,12 @@ COLUMN_TYPES = {
 }
 
 
-class DailyEquityLoader(DataLoader):
+cdef class DailyEquityLoader:
 
-    def __init__(self, daily_bar_path, daily_index_path, trading_days):
+    cdef object daily_bar_table, daily_bar_index, trading_days
+
+
+    def __cinit__(self, daily_bar_path, daily_index_path, trading_days):
         self.daily_bar_table = bcolz.open(daily_bar_path, mode='r')
         self.daily_bar_index = shelve.open(daily_index_path)
         self.trading_days = trading_days
@@ -39,42 +41,55 @@ class DailyEquityLoader(DataLoader):
 
         data_arrays = {}
         for col in columns:
-            data_arrays[col] = np.ndarray(
-                shape=(nrows, ncols),
-                dtype=COLUMN_TYPES[col])
-            if data_arrays[col].dtype == np.float64:
-                data_arrays[col][:] = np.nan
+            dtype = COLUMN_TYPES[col]
+            if dtype == np.float64:
+                col_data = np.ndarray(
+                    shape=(nrows, ncols),
+                    dtype=dtype)
+                col_data[:] = np.nan
+                data_arrays[col] = col_data
+            elif dtype == np.uint32:
+                col_data = np.zeros(
+                    shape=(nrows, ncols),
+                    dtype=dtype)
+                data_arrays[col] = col_data
 
-        start_pos = self.daily_bar_index['start_pos']
-        start_day_offset = self.daily_bar_index['start_day_offset']
+        cdef dict start_pos = self.daily_bar_index['start_pos']
+        cdef dict start_day_offset = self.daily_bar_index[
+            'start_day_offset']
 
-        date_offset = self.trading_days.searchsorted(dates[0])
-        date_len = dates.shape[0]
+        cdef np.intp_t date_offset = self.trading_days.searchsorted(dates[0])
+        cdef np.intp_t date_len = dates.shape[0]
 
-        asset_indices = []
+        cdef np.intp_t start, end
+        cdef np.intp_t i
 
-        for i, asset in enumerate(assets):
-            start = start_pos[asset] - start_day_offset[asset] + \
-                date_offset
+        cdef np.ndarray[dtype=np.uint8_t, ndim=1] mask = np.zeros(
+            self.daily_bar_table.len, dtype=np.uint8)
+
+        for asset in assets:
+            start = start_pos[asset] - \
+                    start_day_offset[asset] + \
+                    date_offset
             # what if negative?
             # or handle case goes over
             # may need end_day_offset
             end = start + date_len
-            asset_indices.append(slice(start, end, 1))
+            for i in range(start, end):
+                mask[i] = True
 
+        print type(mask)
         for col in columns:
-            data_col = self.daily_bar_table[col][:]
-            for i, asset_slice in enumerate(asset_indices):
+            data_col = self.daily_bar_table[col]
+            asset_data = data_col[mask.view(dtype=np.bool)]
 
-                asset_data = data_col[asset_slice]
+            if col != 'volume':
+                # Use int for check for better precision.
+                where_nan = asset_data[asset_data == 0]
+                asset_data = asset_data * 0.001
+                asset_data[where_nan] = np.nan
 
-                if col != 'volume':
-                    # Use int for check for better precision.
-                    where_nan = asset_data[asset_data == 0]
-                    asset_data = asset_data * 0.001
-                    asset_data[where_nan] = np.nan
-
-                data_arrays[col][:, i] = asset_data
+#            data_arrays[col][:, 0] = asset_data
             del data_col
 
         return[
