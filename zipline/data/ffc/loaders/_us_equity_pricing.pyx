@@ -47,9 +47,6 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
     cdef np.intp_t start, end
     cdef np.intp_t i
 
-    cdef np.ndarray[dtype=np.uint8_t, ndim=1] mask = np.zeros(
-        daily_bar_table.len, dtype=np.uint8)
-
     asset_indices = []
     for asset in assets:
         start = start_pos[asset] - \
@@ -62,20 +59,20 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
         asset_indices.append((start, end))
 
     for col in columns:
-        data_col = daily_bar_table[col.name]
+        data_col = daily_bar_table[col.name][:]
         is_float = col.dtype == np.float32
         col_array = data_arrays[col.name]
         for i, asset_ix in enumerate(asset_indices):
             asset_data = data_col[asset_ix[0]:asset_ix[1]]
 
-            if is_float:
-                # Use int for nan check for better precision.
-                where_nan = asset_data[asset_data == 0]
-                # Data is stored as np.uint32 of equity pricing x 1000
-                asset_data = asset_data * 0.001
-                asset_data[where_nan] = np.nan
-
             col_array[:, i] = asset_data
+
+        if is_float:
+            # Use int for nan check for better precision.
+            where_nan = col_array[col_array == 0]
+            col_array = col_array.astype(np.float32)
+            data_col[where_nan] = np.nan
+
         del data_col
 
     return[

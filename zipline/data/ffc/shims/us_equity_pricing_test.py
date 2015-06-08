@@ -1,4 +1,5 @@
 import shelve
+import time
 
 import pandas as pd
 
@@ -28,11 +29,15 @@ if __name__ == "__main__":
                                    "./daily_equity_index.shelf",
                                    trading_days=td[td >= min_date])
 
+    before = time.time()
     result = loader.load_adjusted_array(
         [USEquityPricing.close, USEquityPricing.volume],
         dates,
         assets,
     )
+    after = time.time()
+    duration = after - before
+    print "time in load_adjuste_array={0}".format(duration)
 
     print result[0]
     print result[1]
