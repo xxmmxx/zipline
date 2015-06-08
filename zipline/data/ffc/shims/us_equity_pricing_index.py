@@ -12,12 +12,18 @@ def build_daily_equity_index(table, trading_days):
 
     start_pos = {}
     start_day_offset = {}
+    end_day_offset = {}
 
-    curr_sid = 0
+    prev_sid = None
+    curr_sid = None
 
     for i in xrange(sids.shape[0]):
         sid = sids[i]
         if curr_sid != sid:
+            if prev_sid is not None:
+                end_day_offset[sid] = pd.Timestamp(days[i - 1],
+                                                   unit='s',
+                                                   tz='UTC')
             start_pos[sid] = i
             day = pd.Timestamp(days[i], unit='s', tz='UTC')
             offset = trading_days.searchsorted(day)
@@ -27,6 +33,7 @@ def build_daily_equity_index(table, trading_days):
     d = shelve.open('./daily_equity_index.shelf')
     d['start_pos'] = start_pos
     d['start_day_offset'] = start_day_offset
+    d['end_day_offset'] = end_day_offset
 
     d.close()
 
