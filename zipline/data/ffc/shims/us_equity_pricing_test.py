@@ -23,7 +23,6 @@ if __name__ == "__main__":
     # generated from start_pos.keys()[0:8000]
     d = shelve.open('./daily_equity_index.shelf')
     assets = np.array(sorted(d['start_pos'].keys())[0:8000], dtype=np.uint32)
-    print assets
 
     loader = USEquityPricingLoader("./equity_daily_bars.bcolz",
                                    "./daily_equity_index.shelf",
@@ -37,4 +36,3 @@ if __name__ == "__main__":
 
     print result[0]
     print result[1]
-    import pprint; import nose; nose.tools.set_trace()

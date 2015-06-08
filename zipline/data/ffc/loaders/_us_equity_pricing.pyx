@@ -50,6 +50,7 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
     cdef np.ndarray[dtype=np.uint8_t, ndim=1] mask = np.zeros(
         daily_bar_table.len, dtype=np.uint8)
 
+    asset_indices = []
     for asset in assets:
         start = start_pos[asset] - \
                 start_day_offset[asset] + \
@@ -58,23 +59,23 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
         # or handle case goes over
         # may need end_day_offset
         end = start + date_len
-        print start, end
-        for i in range(start, end):
-            mask[i] = True
+        asset_indices.append((start, end))
 
     for col in columns:
         data_col = daily_bar_table[col.name]
-        asset_data = data_col[mask.view(dtype=np.bool)]
-        print asset_data
+        is_float = col.dtype == np.float32
+        col_array = data_arrays[col.name]
+        for i, asset_ix in enumerate(asset_indices):
+            asset_data = data_col[asset_ix[0]:asset_ix[1]]
 
-        if col.dtype == np.float32:
-            # Use int for nan check for better precision.
-            where_nan = asset_data[asset_data == 0]
-            # Data is stored as np.uint32 of equity pricing x 1000
-            asset_data = asset_data * 0.001
-            asset_data[where_nan] = np.nan
+            if is_float:
+                # Use int for nan check for better precision.
+                where_nan = asset_data[asset_data == 0]
+                # Data is stored as np.uint32 of equity pricing x 1000
+                asset_data = asset_data * 0.001
+                asset_data[where_nan] = np.nan
 
-        data_arrays[col.name][:] = asset_data
+            col_array[:, i] = asset_data
         del data_col
 
     return[
