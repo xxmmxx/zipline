@@ -31,7 +31,7 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
     for col in columns:
         col_data = np.zeros(
             shape=(nrows, ncols),
-            dtype=col.dtype)
+            dtype=np.uint32)
         data_arrays[col.name] = col_data
 
     cdef dict start_pos = daily_bar_index['start_pos']
@@ -60,7 +60,6 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
 
     for col in columns:
         data_col = daily_bar_table[col.name][:]
-        is_float = col.dtype == np.float32
         col_array = data_arrays[col.name]
         for i, asset_ix in enumerate(asset_indices):
             asset_data = data_col[asset_ix[0]:asset_ix[1]]
@@ -69,12 +68,13 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
             # of dates if the asset has an earlier end date.
             col_array[0:asset_data.shape[0], i] = asset_data
 
-        if is_float:
+        if col.dtype == np.float32:
             # Use int for nan check for better precision.
             where_nan = col_array == 0
             col_array = col_array.astype(np.float32) * 0.001
             col_array[where_nan] = np.nan
 
+        data_arrays[col.name] = col_array
         del data_col
 
     return[

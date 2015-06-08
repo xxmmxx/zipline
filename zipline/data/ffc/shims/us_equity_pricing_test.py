@@ -39,5 +39,5 @@ if __name__ == "__main__":
     duration = after - before
     print "time in load_adjusted_array={0}".format(duration)
 
-    print result[0]
-    print result[1]
+    print np.array(result[0].data)
+    print np.array(result[1].data)
