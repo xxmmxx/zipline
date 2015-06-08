@@ -66,7 +66,7 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
         if is_float:
             # Use int for nan check for better precision.
             where_nan = col_array == 0
-            col_array = col_array.astype(np.float32)
+            col_array = col_array.astype(np.float32) * 0.001
             col_array[where_nan] = np.nan
 
         del data_col
