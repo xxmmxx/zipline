@@ -28,11 +28,6 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
 
     # Create return containers for each column.
     data_arrays = {}
-    for col in columns:
-        col_data = np.zeros(
-            shape=(nrows, ncols),
-            dtype=np.uint32)
-        data_arrays[col.name] = col_data
 
     cdef dict start_pos = daily_bar_index['start_pos']
     cdef dict start_day_offset = daily_bar_index['start_day_offset']
@@ -60,7 +55,7 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
 
     for col in columns:
         data_col = daily_bar_table[col.name][:]
-        col_array = data_arrays[col.name]
+        col_array = np.zeros(shape=(nrows, ncols), dtype=np.uint32)
         for i, asset_ix in enumerate(asset_indices):
             asset_data = data_col[asset_ix[0]:asset_ix[1]]
 
