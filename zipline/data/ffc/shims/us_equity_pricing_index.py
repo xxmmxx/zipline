@@ -20,10 +20,12 @@ def build_daily_equity_index(table, trading_days):
     for i in xrange(sids.shape[0]):
         sid = sids[i]
         if curr_sid != sid:
+            if prev_sid is None:
+                # initialize
+                prev_sid = sid
             if prev_sid is not None:
-                end_day_offset[sid] = pd.Timestamp(days[i - 1],
-                                                   unit='s',
-                                                   tz='UTC')
+                end_day_offset[sid] = trading_days.searchsorted(
+                    pd.Timestamp(days[i - 1], unit='s', tz='UTC'))
             start_pos[sid] = i
             day = pd.Timestamp(days[i], unit='s', tz='UTC')
             offset = trading_days.searchsorted(day)

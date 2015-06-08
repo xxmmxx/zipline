@@ -36,6 +36,7 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
 
     cdef dict start_pos = daily_bar_index['start_pos']
     cdef dict start_day_offset = daily_bar_index['start_day_offset']
+    cdef dict end_day_offset = daily_bar_index['end_day_offset']
 
     cdef np.intp_t date_offset = trading_days.searchsorted(dates[0])
     cdef np.intp_t date_len = dates.shape[0]
@@ -48,10 +49,9 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
         start = start_pos[asset] - \
                 start_day_offset[asset] + \
                 date_offset
-        # what if negative?
-        # or handle case goes over
-        # may need end_day_offset
-        end = start + date_len
+        if start < 0:
+            raise Exception(tuple(asset, start))
+        end = min(start + date_len, end_day_offset[asset])
         asset_indices.append((start, end))
 
     for col in columns:
@@ -61,7 +61,9 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
         for i, asset_ix in enumerate(asset_indices):
             asset_data = data_col[asset_ix[0]:asset_ix[1]]
 
-            col_array[:, i] = asset_data
+            # Asset data may not necessarily be the same shape as the number
+            # of dates if the asset has an earlier end date.
+            col_array[0:asset_data.shape[0], i] = asset_data
 
         if is_float:
             # Use int for nan check for better precision.
