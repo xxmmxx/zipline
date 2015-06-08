@@ -45,13 +45,17 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
     cdef np.intp_t i
 
     asset_indices = []
+
+    cdef np.intp_t asset_start, asset_start_day_offset, asset_end_day_offset
+
     for asset in assets:
-        start = start_pos[asset] - \
-                start_day_offset[asset] + \
+        asset_start = start_pos[asset]
+        asset_start_day_offset = start_day_offset[asset]
+        asset_end_day_offset = end_day_offset[asset]
+        start = asset_start - \
+                asset_start_day_offset + \
                 date_offset
-        if start < 0:
-            raise Exception(tuple(asset, start))
-        end = min(start + date_len, end_day_offset[asset])
+        end = min(start + date_len, asset_start + asset_end_day_offset)
         asset_indices.append((start, end))
 
     for col in columns:
