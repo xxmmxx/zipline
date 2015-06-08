@@ -1,9 +1,8 @@
 import shelve
-
 import pandas as pd
 
 import bcolz
-
+cimport cython
 import numpy as np
 cimport numpy as np
 
@@ -12,6 +11,7 @@ from zipline.data.adjusted_array import (
     NOMASK,
 )
 
+@cython.boundscheck(False)
 cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
                                       trading_days,
                                       columns,
@@ -29,12 +29,8 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
     # Create return containers for each column.
     data_arrays = {}
     for col in columns:
-        # Should we make the fill value a property of the Column?
-        fill_value_map = {np.float32: np.nan,
-                          np.uint32: 0}
-        col_data = np.full(
+        col_data = np.zeros(
             shape=(nrows, ncols),
-            fill_value=fill_value_map[col.dtype],
             dtype=col.dtype)
         data_arrays[col.name] = col_data
 
@@ -69,9 +65,9 @@ cpdef _load_adjusted_array_from_bcolz(daily_bar_table, daily_bar_index,
 
         if is_float:
             # Use int for nan check for better precision.
-            where_nan = col_array[col_array == 0]
+            where_nan = col_array == 0
             col_array = col_array.astype(np.float32)
-            data_col[where_nan] = np.nan
+            col_array[where_nan] = np.nan
 
         del data_col
 
