@@ -35,8 +35,8 @@ ext_modules = [
         include_dirs=[np.get_include()],
     ),
     Extension(
-        'zipline.data.ffc.daily_equity_loader',
-        ['zipline/data/ffc/daily_equity_loader.pyx'],
+        'zipline.data.ffc.loaders._us_equity_pricing',
+        ['zipline/data/ffc/loaders/_us_equity_pricing.pyx'],
         include_dirs=[np.get_include()],
     ),
 ]
