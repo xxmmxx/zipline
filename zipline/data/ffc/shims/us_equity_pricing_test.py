@@ -37,7 +37,7 @@ if __name__ == "__main__":
     )
     after = time.time()
     duration = after - before
-    print "time in load_adjuste_array={0}".format(duration)
+    print "time in load_adjusted_array={0}".format(duration)
 
     print result[0]
     print result[1]
