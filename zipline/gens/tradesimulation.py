@@ -72,14 +72,10 @@ class AlgorithmSimulator(object):
                 record.extra['algo_dt'] = self.simulation_dt
         self.processor = Processor(inject_algo_dt)
 
-    def transform(self, stream_in):
+    def transform(self, todo_remove):
         """
         Main generator work loop.
         """
-        # Initialize the mkt_close
-        mkt_open = self.algo.perf_tracker.market_open
-        mkt_close = self.algo.perf_tracker.market_close
-
         sim_params = self.algo.sim_params
         trading_days = sim_params.trading_days
         env = TradingEnvironment.instance()
@@ -92,6 +88,8 @@ class AlgorithmSimulator(object):
                 dts = market_minutes_for_day(day)
                 for dt in dts:
                     yield {}
+                # use the last dt as market close
+                yield self.get_message(dt)
 
     def _process_snapshot(self, dt, snapshot, instant_fill):
         """
