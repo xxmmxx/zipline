@@ -257,15 +257,15 @@ class TradingAlgorithm(object):
             self._before_trading_start = kwargs.pop('before_trading_start',
                                                     None)
 
-#        self.event_manager.add_event(
-#            zipline.utils.events.Event(
-#                zipline.utils.events.Always(),
-#                # We pass handle_data.__func__ to get the unbound method.
-#                # We will explicitly pass the algorithm to bind it again.
-#                self.handle_data.__func__,
-#            ),
-#            prepend=True,
-#        )
+        self.event_manager.add_event(
+            zipline.utils.events.Event(
+                zipline.utils.events.Always(),
+                # We pass handle_data.__func__ to get the unbound method.
+                # We will explicitly pass the algorithm to bind it again.
+                self.handle_data.__func__,
+            ),
+            prepend=True,
+        )
 
         # If method not defined, NOOP
         if self._initialize is None:

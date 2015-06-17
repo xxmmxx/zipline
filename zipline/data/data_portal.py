@@ -30,7 +30,9 @@ class DataPortal(object):
         except KeyError:
             carray = self.carrays[column][asset] = bcolz.carray(
                 rootdir=path + "/" + column, mode='r')
-        price = carray[25] * 0.001 * 0.5
+        first_row = 200
+        dt_ix = first_row + dt.minute
+        price = carray[dt_ix] * 0.001 * 0.5
         return price
 
     def get_equity_price_view(self, asset):
