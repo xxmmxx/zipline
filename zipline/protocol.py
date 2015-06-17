@@ -491,18 +491,13 @@ class BarData(object):
     usage of what this replaced as a dictionary subclass.
     """
 
-    def __init__(self, data=None):
-        self._data = data or {}
-        self._contains_override = None
+    def __init__(self, data_portal=None):
+        self.data_portal = data_portal or {}
 
     def __contains__(self, name):
-        if self._contains_override:
-            if self._contains_override(name):
-                return name in self._data
-            else:
-                return False
-        else:
-            return name in self._data
+        # TODO: for now just return True,
+        # should replace with concept of universe and trade data?
+        return True
 
     def has_key(self, name):
         """
@@ -512,13 +507,15 @@ class BarData(object):
         return name in self
 
     def __setitem__(self, name, value):
-        self._data[name] = value
+        # No longer supported.
+        pass
 
     def __getitem__(self, name):
-        return self._data[name]
+        return self.data_portal.get_equity_price_view(name)
 
     def __delitem__(self, name):
-        del self._data[name]
+        # No longer supported.
+        pass
 
     def __iter__(self):
         for sid, data in iteritems(self._data):
