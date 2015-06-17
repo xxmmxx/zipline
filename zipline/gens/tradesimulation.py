@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2015 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ from zipline.protocol import (
     SIDData,
     DATASOURCE_TYPE
 )
+from zipline.finance.trading import TradingEnvironment
 
 log = Logger('Trade Simulation')
 
@@ -79,91 +80,18 @@ class AlgorithmSimulator(object):
         mkt_open = self.algo.perf_tracker.market_open
         mkt_close = self.algo.perf_tracker.market_close
 
+        sim_params = self.algo.sim_params
+        trading_days = sim_params.trading_days
+        env = TradingEnvironment.instance()
+        market_minutes_for_day = env.market_minutes_for_day
+
         # inject the current algo
         # snapshot time to any log record generated.
         with self.processor.threadbound():
-            data_frequency = self.sim_params.data_frequency
-
-            self._call_before_trading_start(mkt_open)
-
-            for date, snapshot in stream_in:
-
-                self.simulation_dt = date
-                self.on_dt_changed(date)
-
-                # If we're still in the warmup period.  Use the event to
-                # update our universe, but don't yield any perf messages,
-                # and don't send a snapshot to handle_data.
-                if date < self.algo_start:
-                    for event in snapshot:
-                        if event.type == DATASOURCE_TYPE.SPLIT:
-                            self.algo.blotter.process_split(event)
-
-                        elif event.type == DATASOURCE_TYPE.TRADE:
-                            self.update_universe(event)
-                            self.algo.perf_tracker.process_trade(event)
-                        elif event.type == DATASOURCE_TYPE.CUSTOM:
-                            self.update_universe(event)
-
-                else:
-                    message = self._process_snapshot(
-                        date,
-                        snapshot,
-                        self.algo.instant_fill,
-                    )
-                    # Perf messages are only emitted if the snapshot contained
-                    # a benchmark event.
-                    if message is not None:
-                        yield message
-
-                    # When emitting minutely, we re-iterate the day as a
-                    # packet with the entire days performance rolled up.
-                    if date == mkt_close:
-                        if self.algo.perf_tracker.emission_rate == 'minute':
-                            daily_rollup = self.algo.perf_tracker.to_dict(
-                                emission_type='daily'
-                            )
-                            daily_rollup['daily_perf']['recorded_vars'] = \
-                                self.algo.recorded_vars
-                            yield daily_rollup
-                            tp = self.algo.perf_tracker.todays_performance
-                            tp.rollover()
-
-                        if mkt_close <= self.algo.perf_tracker.last_close:
-                            before_last_close = \
-                                mkt_close < self.algo.perf_tracker.last_close
-                            try:
-                                mkt_open, mkt_close = \
-                                    trading.environment \
-                                           .next_open_and_close(mkt_close)
-
-                            except trading.NoFurtherDataError:
-                                # If at the end of backtest history,
-                                # skip advancing market close.
-                                pass
-                            if self.algo.perf_tracker.emission_rate == \
-                               'minute':
-                                self.algo.perf_tracker\
-                                         .handle_intraday_market_close(
-                                             mkt_open,
-                                             mkt_close)
-
-                            if before_last_close:
-                                self._call_before_trading_start(mkt_open)
-
-                    elif data_frequency == 'daily':
-                        next_day = trading.environment.next_trading_day(date)
-
-                        if next_day is not None and \
-                           next_day < self.algo.perf_tracker.last_close:
-                            self._call_before_trading_start(next_day)
-
-                    self.algo.portfolio_needs_update = True
-                    self.algo.account_needs_update = True
-                    self.algo.performance_needs_update = True
-
-            risk_message = self.algo.perf_tracker.handle_simulation_end()
-            yield risk_message
+            for day in trading_days:
+                dts = market_minutes_for_day(day)
+                for dt in dts:
+                    pass
 
     def _process_snapshot(self, dt, snapshot, instant_fill):
         """
