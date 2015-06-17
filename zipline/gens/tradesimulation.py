@@ -91,7 +91,7 @@ class AlgorithmSimulator(object):
             for day in trading_days:
                 dts = market_minutes_for_day(day)
                 for dt in dts:
-                    pass
+                    yield {}
 
     def _process_snapshot(self, dt, snapshot, instant_fill):
         """
