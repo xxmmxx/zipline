@@ -10,7 +10,13 @@ class DataPortal(object):
         self.views = {}
         self.algo = algo
         self.current_bcolz_handle = None
-        self.carrays = {}
+        self.carrays = {
+            'open': {},
+            'high': {},
+            'low': {},
+            'close': {},
+            'volume': {}
+        }
 
     def get_current_price_data(self, asset, column):
         dt = self.algo.datetime
@@ -20,12 +26,11 @@ class DataPortal(object):
             str(dt.month).zfill(2),
             str(dt.date()))
         try:
-            carray = self.carrays[asset]
+            carray = self.carrays[column][asset]
         except KeyError:
-            carray = self.carrays[asset] = bcolz.carray(
-                rootdir=path + "/close", mode='r')
-        for i in range(500):
-            price = carray[25 + i] * 0.001 * 0.5
+            carray = self.carrays[column][asset] = bcolz.carray(
+                rootdir=path + "/" + column, mode='r')
+        price = carray[25] * 0.001 * 0.5
         return price
 
     def get_equity_price_view(self, asset):
