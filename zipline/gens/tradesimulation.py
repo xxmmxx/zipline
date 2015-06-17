@@ -16,7 +16,6 @@
 from logbook import Logger, Processor
 from pandas.tslib import normalize_date
 
-from zipline.finance import trading
 from zipline.protocol import (
     BarData,
     SIDData,
