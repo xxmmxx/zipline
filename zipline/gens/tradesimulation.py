@@ -90,6 +90,7 @@ class AlgorithmSimulator(object):
             for day in trading_days:
                 dts = market_minutes_for_day(day)
                 for dt in dts:
+                    algo.datetime = dt
                     handle_data(algo, current_data, dt)
 
                 # use the last dt as market close
