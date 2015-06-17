@@ -22,6 +22,7 @@ from zipline.protocol import (
     DATASOURCE_TYPE
 )
 from zipline.finance.trading import TradingEnvironment
+from zipline.data.data_portal import DataPortal
 
 log = Logger('Trade Simulation')
 
@@ -54,7 +55,7 @@ class AlgorithmSimulator(object):
         # The algorithm's data as of our most recent event.
         # We want an object that will have empty objects as default
         # values on missing keys.
-        self.current_data = BarData()
+        self.current_data = BarData(DataPortal(self.algo))
 
         # We don't have a datetime for the current snapshot until we
         # receive a message.
@@ -75,10 +76,13 @@ class AlgorithmSimulator(object):
         """
         Main generator work loop.
         """
-        sim_params = self.algo.sim_params
+        algo = self.algo
+        sim_params = algo.sim_params
         trading_days = sim_params.trading_days
         env = TradingEnvironment.instance()
         market_minutes_for_day = env.market_minutes_for_day
+        handle_data = self.algo.event_manager.handle_data
+        current_data = self.current_data
 
         # inject the current algo
         # snapshot time to any log record generated.
@@ -86,7 +90,8 @@ class AlgorithmSimulator(object):
             for day in trading_days:
                 dts = market_minutes_for_day(day)
                 for dt in dts:
-                    yield {}
+                    handle_data(algo, current_data, dt)
+
                 # use the last dt as market close
                 yield self.get_message(dt)
 

@@ -491,9 +491,8 @@ class BarData(object):
     usage of what this replaced as a dictionary subclass.
     """
 
-    def __init__(self, data=None):
-        self._data = data or {}
-        self._contains_override = None
+    def __init__(self, data_portal=None):
+        self.data_portal = data_portal or {}
 
     def __contains__(self, name):
         if self._contains_override:
@@ -515,7 +514,7 @@ class BarData(object):
         self._data[name] = value
 
     def __getitem__(self, name):
-        return self._data[name]
+        return self.data_portal.get_equity_price_view(name)
 
     def __delitem__(self, name):
         del self._data[name]
