@@ -18,7 +18,7 @@ class DataPortal(object):
             str(dt.year),
             str(dt.month).zfill(2),
             str(dt.date()))
-        table = bcolz.open(path)
+        table = bcolz.ctable(rootdir=path, mode='r')
         query = '(sid == {0}) & (dt == {1})'.format(
             int(asset),
             dt.value / 10e8)
