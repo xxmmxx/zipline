@@ -10,6 +10,7 @@ class DataPortal(object):
         self.views = {}
         self.algo = algo
         self.current_bcolz_handle = None
+        self.carrays = {}
 
     def get_current_price_data(self, asset, column):
         dt = self.algo.datetime
@@ -18,11 +19,14 @@ class DataPortal(object):
             str(dt.year),
             str(dt.month).zfill(2),
             str(dt.date()))
-        table = bcolz.ctable(rootdir=path, mode='r')
-        query = '(sid == {0}) & (dt == {1})'.format(
-            int(asset),
-            dt.value / 10e8)
-        return table[query][column] * 0.001 * 0.5
+        try:
+            carray = self.carrays[asset]
+        except KeyError:
+            carray = self.carrays[asset] = bcolz.carray(
+                rootdir=path + "/close", mode='r')
+        for i in range(500):
+            price = carray[25 + i] * 0.001 * 0.5
+        return price
 
     def get_equity_price_view(self, asset):
         try:
