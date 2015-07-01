@@ -22,111 +22,28 @@ from unittest import TestCase
 
 from datetime import (
     timedelta,
-    datetime
 )
 import pickle
+import sqlite3
 import uuid
 import warnings
 import pandas as pd
 
 from nose_parameterized import parameterized
 
-from zipline.assets import Asset, Equity, Future, AssetFinder
+from zipline.finance.trading import with_environment
+from zipline.assets import (
+    Asset,
+    Equity,
+    Future,
+    AssetFinder,
+    AssetSQLWriter
+)
 from zipline.errors import (
     SymbolNotFound,
     MultipleSymbolsFound,
     SidAssignmentError,
 )
-
-
-def build_lookup_generic_cases():
-    """
-    Generate test cases for AssetFinder test_lookup_generic.
-    """
-
-    unique_start = pd.Timestamp('2013-01-01', tz='UTC')
-    unique_end = pd.Timestamp('2014-01-01', tz='UTC')
-
-    dupe_0_start = pd.Timestamp('2013-01-01', tz='UTC')
-    dupe_0_end = dupe_0_start + timedelta(days=1)
-
-    dupe_1_start = pd.Timestamp('2013-01-03', tz='UTC')
-    dupe_1_end = dupe_1_start + timedelta(days=1)
-
-    frame = pd.DataFrame.from_records(
-        [
-            {
-                'sid': 0,
-                'file_name':  'duplicated',
-                'company_name': 'duplicated_0',
-                'start_date_nano': dupe_0_start.value,
-                'end_date_nano': dupe_0_end.value,
-                'exchange': '',
-            },
-            {
-                'sid': 1,
-                'file_name':  'duplicated',
-                'company_name': 'duplicated_1',
-                'start_date_nano': dupe_1_start.value,
-                'end_date_nano': dupe_1_end.value,
-                'exchange': '',
-            },
-            {
-                'sid': 2,
-                'file_name':  'unique',
-                'company_name': 'unique',
-                'start_date_nano': unique_start.value,
-                'end_date_nano': unique_end.value,
-                'exchange': '',
-            },
-        ],
-    )
-    finder = AssetFinder(metadata=frame)
-    dupe_0, dupe_1, unique = assets = [
-        finder.retrieve_asset(i)
-        for i in range(3)
-    ]
-
-    dupe_0_start = dupe_0.start_date
-    dupe_1_start = dupe_1.start_date
-    cases = [
-        ##
-        # Scalars
-
-        # Asset object
-        (finder, assets[0], None, assets[0]),
-        (finder, assets[1], None, assets[1]),
-        (finder, assets[2], None, assets[2]),
-        # int
-        (finder, 0, None, assets[0]),
-        (finder, 1, None, assets[1]),
-        (finder, 2, None, assets[2]),
-        # Duplicated symbol with resolution date
-        (finder, 'duplicated', dupe_0_start, dupe_0),
-        (finder, 'duplicated', dupe_1_start, dupe_1),
-        # Unique symbol, with or without resolution date.
-        (finder, 'unique', unique_start, unique),
-        (finder, 'unique', None, unique),
-
-        ##
-        # Iterables
-
-        # Iterables of Asset objects.
-        (finder, assets, None, assets),
-        (finder, iter(assets), None, assets),
-        # Iterables of ints
-        (finder, (0, 1), None, assets[:-1]),
-        (finder, iter((0, 1)), None, assets[:-1]),
-        # Iterables of symbols.
-        (finder, ('duplicated', 'unique'), dupe_0_start, [dupe_0, unique]),
-        (finder, ('duplicated', 'unique'), dupe_1_start, [dupe_1, unique]),
-        # Mixed types
-        (finder,
-         ('duplicated', 2, 'unique', 1, dupe_1),
-         dupe_0_start,
-         [dupe_0, assets[2], unique, assets[1], dupe_1]),
-    ]
-    return cases
 
 
 class AssetTestCase(TestCase):
@@ -287,7 +204,11 @@ class AssetFinderTestCase(TestCase):
                 for i in range(3)
             ]
         )
-        finder = AssetFinder(frame)
+        conn = sqlite3.connect('lookup_symbol_fuzzy.db')
+        writer = AssetSQLWriter(frame, fuzzy_char='@')
+        writer.write_sql(conn)
+
+        finder = AssetFinder(conn, fuzzy_char='@')
         asset_0, asset_1, asset_2 = (
             finder.retrieve_asset(i) for i in range(3)
         )
@@ -307,8 +228,6 @@ class AssetFinderTestCase(TestCase):
 
             # Shouldn't find this with no fuzzy_str passed.
             self.assertIsNone(finder.lookup_symbol('test1', as_of))
-            # Shouldn't find this with an incorrect fuzzy_str.
-            self.assertIsNone(finder.lookup_symbol('test1', as_of, fuzzy='*'))
             # Should find it with the correct fuzzy_str.
             self.assertEqual(
                 asset_1,
@@ -335,7 +254,11 @@ class AssetFinderTestCase(TestCase):
             ]
         )
 
-        finder = AssetFinder(df)
+        conn = sqlite3.connect('lookup_symbol_resolve_multiple.db')
+        writer = AssetSQLWriter(df)
+        writer.write_sql(conn)
+
+        finder = AssetFinder(conn)
         for _ in range(2):  # Run checks twice to test for caching bugs.
             with self.assertRaises(SymbolNotFound):
                 finder.lookup_symbol_resolve_multiple('non_existing', dates[0])
@@ -353,78 +276,9 @@ class AssetFinderTestCase(TestCase):
                 self.assertEqual(result.symbol, 'existing')
                 self.assertEqual(result.sid, i)
 
-    @parameterized.expand(
-        build_lookup_generic_cases()
-    )
-    def test_lookup_generic(self, finder, symbols, reference_date, expected):
-        """
-        Ensure that lookup_generic works with various permutations of inputs.
-        """
-        results, missing = finder.lookup_generic(symbols, reference_date)
-        self.assertEqual(results, expected)
-        self.assertEqual(missing, [])
-
-    def test_lookup_generic_handle_missing(self):
-        data = pd.DataFrame.from_records(
-            [
-                # Sids that will be found when we do lookups.
-                {
-                    'sid': 0,
-                    'file_name': 'real',
-                    'company_name': 'real',
-                    'start_date_nano': pd.Timestamp('2013-1-1', tz='UTC'),
-                    'end_date_nano': pd.Timestamp('2014-1-1', tz='UTC'),
-                    'exchange': '',
-                },
-                {
-                    'sid': 1,
-                    'file_name': 'also_real',
-                    'company_name': 'also_real',
-                    'start_date_nano': pd.Timestamp('2013-1-1', tz='UTC'),
-                    'end_date_nano': pd.Timestamp('2014-1-1', tz='UTC'),
-                    'exchange': '',
-                },
-                # Sid whose end date is before our query date.  We should
-                # still correctly find it.
-                {
-                    'sid': 2,
-                    'file_name': 'real_but_old',
-                    'company_name': 'real_but_old',
-                    'start_date_nano': pd.Timestamp('2002-1-1', tz='UTC'),
-                    'end_date_nano': pd.Timestamp('2003-1-1', tz='UTC'),
-                    'exchange': '',
-                },
-                # Sid whose end date is before our query date.  We should
-                # still correctly find it.
-                {
-                    'sid': 3,
-                    'file_name': 'real_but_in_the_future',
-                    'company_name': 'real_but_in_the_future',
-                    'start_date_nano': pd.Timestamp('2014-1-1', tz='UTC'),
-                    'end_date_nano': pd.Timestamp('2020-1-1', tz='UTC'),
-                    'exchange': 'THE FUTURE',
-                },
-            ]
-        )
-        finder = AssetFinder(data)
-        results, missing = finder.lookup_generic(
-            ['real', 1, 'fake', 'real_but_old', 'real_but_in_the_future'],
-            pd.Timestamp('2013-02-01', tz='UTC'),
-        )
-
-        self.assertEqual(len(results), 3)
-        self.assertEqual(results[0].symbol, 'real')
-        self.assertEqual(results[0].sid, 0)
-        self.assertEqual(results[1].symbol, 'also_real')
-        self.assertEqual(results[1].sid, 1)
-
-        self.assertEqual(len(missing), 2)
-        self.assertEqual(missing[0], 'fake')
-        self.assertEqual(missing[1], 'real_but_in_the_future')
-
     def test_insert_metadata(self):
-        finder = AssetFinder()
-        finder.insert_metadata(0,
+        writer = AssetSQLWriter()
+        writer.insert_metadata(0,
                                asset_type='equity',
                                start_date='2014-01-01',
                                end_date='2015-01-01',
@@ -432,47 +286,48 @@ class AssetFinderTestCase(TestCase):
                                foo_data="FOO",)
 
         # Test proper insertion
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
-        self.assertEqual('PLAY', finder.metadata_cache[0]['symbol'])
-        self.assertEqual('2015-01-01', finder.metadata_cache[0]['end_date'])
+        self.assertEqual('equity', writer.metadata_cache[0]['asset_type'])
+        self.assertEqual('PLAY', writer.metadata_cache[0]['symbol'])
+        self.assertEqual('2015-01-01', writer.metadata_cache[0]['end_date'])
 
         # Test invalid field
-        self.assertFalse('foo_data' in finder.metadata_cache[0])
+        self.assertFalse('foo_data' in writer.metadata_cache[0])
 
         # Test updating fields
-        finder.insert_metadata(0,
+        writer.insert_metadata(0,
                                asset_type='equity',
                                start_date='2014-01-01',
                                end_date='2015-02-01',
                                symbol="PLAY",
                                exchange="NYSE",)
-        self.assertEqual('2015-02-01', finder.metadata_cache[0]['end_date'])
-        self.assertEqual('NYSE', finder.metadata_cache[0]['exchange'])
+        self.assertEqual('2015-02-01', writer.metadata_cache[0]['end_date'])
+        self.assertEqual('NYSE', writer.metadata_cache[0]['exchange'])
 
         # Check that old data survived
-        self.assertEqual('PLAY', finder.metadata_cache[0]['symbol'])
+        self.assertEqual('PLAY', writer.metadata_cache[0]['symbol'])
 
-    def test_consume_metadata(self):
-
+    def test_consume_metadata_dict(self):
         # Test dict consumption
-        finder = AssetFinder({0: {'asset_type': 'equity'}})
+        writer = AssetSQLWriter({0: {'asset_type': 'equity'}})
         dict_to_consume = {0: {'symbol': 'PLAY'},
                            1: {'symbol': 'MSFT'}}
-        finder.consume_metadata(dict_to_consume)
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
-        self.assertEqual('PLAY', finder.metadata_cache[0]['symbol'])
+        writer.consume_metadata(dict_to_consume)
+        self.assertEqual('equity', writer.metadata_cache[0]['asset_type'])
+        self.assertEqual('PLAY', writer.metadata_cache[0]['symbol'])
 
+    def test_consume_metadata_df(self):
+        writer = AssetSQLWriter({0: {'asset_type': 'equity'}})
         # Test dataframe consumption
         df = pd.DataFrame(columns=['asset_name', 'exchange'], index=[0, 1])
         df['asset_name'][0] = "Dave'N'Busters"
         df['exchange'][0] = "NASDAQ"
         df['asset_name'][1] = "Microsoft"
         df['exchange'][1] = "NYSE"
-        finder.consume_metadata(df)
-        self.assertEqual('NASDAQ', finder.metadata_cache[0]['exchange'])
-        self.assertEqual('Microsoft', finder.metadata_cache[1]['asset_name'])
+        writer.consume_metadata(df)
+        self.assertEqual('NASDAQ', writer.metadata_cache[0]['exchange'])
+        self.assertEqual('Microsoft', writer.metadata_cache[1]['asset_name'])
         # Check that old data survived
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
+        self.assertEqual('equity', writer.metadata_cache[0]['asset_type'])
 
     def test_consume_asset_as_identifier(self):
 
@@ -485,41 +340,27 @@ class AssetFinderTestCase(TestCase):
         future_asset = Future(200, symbol="TESTFUT", end_date=fut_end)
 
         # Consume the Assets
-        finder = AssetFinder()
-        finder.consume_identifiers([equity_asset, future_asset])
-        finder.populate_cache()
+        writer = AssetSQLWriter()
+        writer.consume_identifiers([equity_asset, future_asset])
+        conn = sqlite3.connect('asset_as_identifier.db')
+        writer.write_sql(conn)
+        conn.close()
+
+        conn = sqlite3.connect('asset_as_identifier.db')
+
+        c = conn.cursor()
 
         # Test equality with newly built Assets
-        self.assertEqual(equity_asset, finder.retrieve_asset(1))
-        self.assertEqual(future_asset, finder.retrieve_asset(200))
-        self.assertEqual(eq_end, finder.retrieve_asset(1).end_date)
-        self.assertEqual(fut_end, finder.retrieve_asset(200).end_date)
+        c.execute('select sid, end_date from equities where sid = 1')
+        sid, end_date = c.fetchone()
+        self.assertEqual(equity_asset.sid, sid)
+        self.assertEqual(eq_end.value, end_date)
 
-    def test_sid_assignment(self):
+        c.execute('select sid, end_date from futures where sid = 200')
+        sid, end_date = c.fetchone()
 
-        # This metadata does not contain SIDs
-        metadata = {'PLAY': {'symbol': 'PLAY'},
-                    'MSFT': {'symbol': 'MSFT'}}
-
-        # Build a finder that is allowed to assign sids
-        finder = AssetFinder(metadata=metadata, allow_sid_assignment=True)
-
-        # Verify that Assets were built and different sids were assigned
-        play = finder.lookup_symbol('PLAY', datetime.now())
-        msft = finder.lookup_symbol('MSFT', datetime.now())
-        self.assertEqual('PLAY', play.symbol)
-        self.assertIsNotNone(play.sid)
-        self.assertNotEqual(play.sid, msft.sid)
-
-    def test_sid_assignment_failure(self):
-
-        # This metadata does not contain SIDs
-        metadata = {'PLAY': {'symbol': 'PLAY'},
-                    'MSFT': {'symbol': 'MSFT'}}
-
-        # Build a finder that is not allowed to assign sids, asserting failure
-        with self.assertRaises(SidAssignmentError):
-            AssetFinder(metadata=metadata, allow_sid_assignment=False)
+        self.assertEqual(future_asset.sid, sid)
+        self.assertEqual(fut_end.value, end_date)
 
     def test_security_dates_warning(self):
 
@@ -540,9 +381,8 @@ class AssetFinderTestCase(TestCase):
                 self.assertTrue(issubclass(warning.category,
                                            DeprecationWarning))
 
-    def test_lookup_future_chain(self):
+    def test_lookup_future_by_expiration(self):
         metadata = {
-            # Expires today, so should be valid
             2: {
                 'symbol': 'ADN15',
                 'root_symbol': 'AD',
@@ -557,64 +397,45 @@ class AssetFinderTestCase(TestCase):
                 'expiration_date': pd.Timestamp('2015-09-14', tz='UTC'),
                 'start_date': pd.Timestamp('2015-01-01', tz='UTC')
             },
-            # Starts trading today, so should be valid.
             0: {
                 'symbol': 'ADF16',
                 'root_symbol': 'AD',
                 'asset_type': 'future',
                 'expiration_date': pd.Timestamp('2015-12-14', tz='UTC'),
-                'start_date': pd.Timestamp('2015-06-15', tz='UTC')
-            },
-            # Copy of the above future, but starts trading in August,
-            # so it isn't valid.
-            3: {
-                'symbol': 'ADF16',
-                'root_symbol': 'AD',
-                'asset_type': 'future',
-                'expiration_date': pd.Timestamp('2015-12-14', tz='UTC'),
-                'start_date': pd.Timestamp('2015-08-01', tz='UTC')
+                'start_date': pd.Timestamp('2015-01-01', tz='UTC')
             },
 
         }
 
-        finder = AssetFinder(metadata=metadata)
-        dt = pd.Timestamp('2015-06-15', tz='UTC')
-        last_year = pd.Timestamp('2014-01-01', tz='UTC')
-        first_day = pd.Timestamp('2015-01-01', tz='UTC')
+        conn = sqlite3.connect('lookup_future_by_expiration.db')
 
-        # Check that we get the expected number of contracts, in the
-        # right order
-        ad_contracts = finder.lookup_future_chain('AD', dt, dt)
-        self.assertEqual(len(ad_contracts), 3)
-        self.assertEqual(ad_contracts[0].sid, 2)
-        self.assertEqual(ad_contracts[1].sid, 1)
-        self.assertEqual(ad_contracts[2].sid, 0)
+        writer = AssetSQLWriter(metadata=metadata)
+        writer.write_sql(conn)
+        dt = pd.Timestamp('2015-06-19', tz='UTC')
 
-        # Check that we get nothing if our knowledge date is last year
-        ad_contracts = finder.lookup_future_chain('AD', dt, last_year)
-        self.assertEqual(len(ad_contracts), 0)
+        finder = AssetFinder(conn)
 
-        # Check that we get things that start on the knowledge date
-        ad_contracts = finder.lookup_future_chain('AD', dt, first_day)
-        self.assertEqual(len(ad_contracts), 2)
+        # First-of-the-month timestamps
+        may_15 = pd.Timestamp('2015-05-01', tz='UTC')
+        june_15 = pd.Timestamp('2015-06-01', tz='UTC')
+        sept_15 = pd.Timestamp('2015-09-01', tz='UTC')
+        dec_15 = pd.Timestamp('2015-12-01', tz='UTC')
+        jan_16 = pd.Timestamp('2016-01-01', tz='UTC')
 
-    def test_map_identifier_index_to_sids(self):
-        # Build an empty finder and some Assets
-        dt = pd.Timestamp('2014-01-01', tz='UTC')
-        finder = AssetFinder()
-        asset1 = Equity(1, symbol="AAPL")
-        asset2 = Equity(2, symbol="GOOG")
-        asset200 = Future(200, symbol="CLK15")
-        asset201 = Future(201, symbol="CLM15")
+        # ADV15 is the next valid contract, so check that we get it
+        # for every ref_date before 9/14/15
+        contract = finder.lookup_future_by_expiration('AD', dt, may_15)
+        self.assertEqual(contract.sid, 1)
 
-        # Check for correct mapping and types
-        pre_map = [asset1, asset2, asset200, asset201]
-        post_map = finder.map_identifier_index_to_sids(pre_map, dt)
-        self.assertListEqual([1, 2, 200, 201], post_map)
-        for sid in post_map:
-            self.assertIsInstance(sid, int)
+        contract = finder.lookup_future_by_expiration('AD', dt, june_15)
+        self.assertEqual(contract.sid, 1)
 
-        # Change order and check mapping again
-        pre_map = [asset201, asset2, asset200, asset1]
-        post_map = finder.map_identifier_index_to_sids(pre_map, dt)
-        self.assertListEqual([201, 2, 200, 1], post_map)
+        contract = finder.lookup_future_by_expiration('AD', dt, sept_15)
+        self.assertEqual(contract.sid, 1)
+
+        # ADF16 has the next expiration date after 12/1/15
+        contract = finder.lookup_future_by_expiration('AD', dt, dec_15)
+        self.assertEqual(contract.sid, 0)
+
+        # No contracts exist after 12/14/2015, so we should get none
+        self.assertIsNone(finder.lookup_future_by_expiration('AD', dt, jan_16))
