@@ -31,7 +31,13 @@ import pandas as pd
 
 from nose_parameterized import parameterized
 
-from zipline.assets import Asset, Equity, Future, AssetFinder
+from zipline.assets import (
+    Asset,
+    Equity,
+    Future,
+    AssetFinder,
+    create_finder_from_index
+)
 from zipline.errors import (
     SymbolNotFound,
     MultipleSymbolsFound,
@@ -474,27 +480,6 @@ class AssetFinderTestCase(TestCase):
         # Check that old data survived
         self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
 
-    def test_consume_asset_as_identifier(self):
-
-        # Build some end dates
-        eq_end = pd.Timestamp('2012-01-01', tz='UTC')
-        fut_end = pd.Timestamp('2008-01-01', tz='UTC')
-
-        # Build some simple Assets
-        equity_asset = Equity(1, symbol="TESTEQ", end_date=eq_end)
-        future_asset = Future(200, symbol="TESTFUT", end_date=fut_end)
-
-        # Consume the Assets
-        finder = AssetFinder()
-        finder.consume_identifiers([equity_asset, future_asset])
-        finder.populate_cache()
-
-        # Test equality with newly built Assets
-        self.assertEqual(equity_asset, finder.retrieve_asset(1))
-        self.assertEqual(future_asset, finder.retrieve_asset(200))
-        self.assertEqual(eq_end, finder.retrieve_asset(1).end_date)
-        self.assertEqual(fut_end, finder.retrieve_asset(200).end_date)
-
     def test_sid_assignment(self):
 
         # This metadata does not contain SIDs
@@ -598,23 +583,23 @@ class AssetFinderTestCase(TestCase):
         ad_contracts = finder.lookup_future_chain('AD', dt, first_day)
         self.assertEqual(len(ad_contracts), 2)
 
-    def test_map_identifier_index_to_sids(self):
+    def test_create_finder_from_index(self):
         # Build an empty finder and some Assets
         dt = pd.Timestamp('2014-01-01', tz='UTC')
-        finder = AssetFinder()
         asset1 = Equity(1, symbol="AAPL")
         asset2 = Equity(2, symbol="GOOG")
         asset200 = Future(200, symbol="CLK15")
         asset201 = Future(201, symbol="CLM15")
 
         # Check for correct mapping and types
-        pre_map = [asset1, asset2, asset200, asset201]
-        post_map = finder.map_identifier_index_to_sids(pre_map, dt)
-        self.assertListEqual([1, 2, 200, 201], post_map)
-        for sid in post_map:
-            self.assertIsInstance(sid, int)
+        index = [asset1, asset2, asset200, asset201]
+        finder = create_finder_from_index(index, dt)
+        finder_sids = finder.sids
+        self.assertListEqual(sorted([1, 2, 200, 201]),
+                             sorted(finder_sids))
 
         # Change order and check mapping again
-        pre_map = [asset201, asset2, asset200, asset1]
-        post_map = finder.map_identifier_index_to_sids(pre_map, dt)
-        self.assertListEqual([201, 2, 200, 1], post_map)
+        index = [asset201, asset2, asset200, asset1]
+        finder = create_finder_from_index(index, dt)
+        self.assertListEqual(sorted([201, 2, 200, 1]),
+                             sorted(finder.sids))

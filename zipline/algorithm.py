@@ -196,11 +196,15 @@ class TradingAlgorithm(object):
         # Update the TradingEnvironment with the provided asset metadata
         self.trading_environment = kwargs.pop('env',
                                               TradingEnvironment.instance())
-        self.trading_environment.update_asset_finder(
-            asset_finder=kwargs.pop('asset_finder', None),
-            asset_metadata=kwargs.pop('asset_metadata', None),
-            identifiers=kwargs.pop('identifiers', None)
-        )
+        if 'asset_finder' in kwargs:
+            self.trading_environment.asset_finder = kwargs['asset_finder']
+        if 'asset_metadata' in kwargs:
+            self.trading_environment.asset_finder.consume_metadata(
+                kwargs['asset_metadata'])
+        if 'identifiers' in kwargs:
+            for identifier in kwargs['identifiers']:
+                self.insert_metadata(identifier)
+
         # Pull in the environment's new AssetFinder for quick reference
         self.asset_finder = self.trading_environment.asset_finder
 
@@ -463,7 +467,7 @@ class TradingAlgorithm(object):
             # if DataFrame provided, map columns to sids and wrap
             # in DataFrameSource
             copy_frame = source.copy()
-            copy_frame.columns = \
+            copy_frame.columns = sorted(finder.sids)
                 self.asset_finder.map_identifier_index_to_sids(
                     source.columns, source.index[0]
                 )

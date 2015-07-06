@@ -22,7 +22,8 @@ from ._assets import (
 )
 from .assets import (
     AssetFinder,
-    AssetConvertible
+    AssetConvertible,
+    create_finder_from_index,
 )
 
 __all__ = [
@@ -32,5 +33,6 @@ __all__ = [
     'AssetFinder',
     'AssetConvertible',
     'make_asset_array',
-    'CACHE_FILE_TEMPLATE'
+    'CACHE_FILE_TEMPLATE',
+    'create_finder_from_index',
 ]

@@ -24,6 +24,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
+from zipline.assets import create_finder_from_index
 from zipline.protocol import Event, DATASOURCE_TYPE
 from zipline.sources import (SpecificEquityTrades,
                              DataFrameSource,
@@ -119,7 +120,8 @@ def create_trade_history(sid, prices, amounts, interval, sim_params,
                          source_id="test_factory"):
     trades = []
     current = sim_params.first_open
-    trading.environment.update_asset_finder(identifiers=[sid])
+    trading.environment.asset_finder = create_finder_from_index(
+        [sid], sim_params.period_start)
 
     oneday = timedelta(days=1)
     use_midnight = interval >= oneday
@@ -311,7 +313,8 @@ def create_test_df_source(sim_params=None, bars='daily'):
 
     df = pd.DataFrame(x, index=index, columns=[0])
 
-    trading.environment.update_asset_finder(identifiers=[0])
+    trading.environment.asset_finder = create_finder_from_index(
+        [0], sim_params.first_open)
 
     return DataFrameSource(df), df
 

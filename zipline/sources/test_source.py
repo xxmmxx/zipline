@@ -25,6 +25,7 @@ import itertools
 
 from six.moves import range
 
+from zipline.assets import create_finder_from_index
 from zipline.protocol import (
     Event,
     DATASOURCE_TYPE
@@ -136,7 +137,8 @@ class SpecificEquityTrades(object):
                 'sids',
                 set(event.sid for event in self.event_list)
             )
-            env.update_asset_finder(identifiers=self.identifiers)
+            env.asset_finder = create_finder_from_index(
+                list(self.identifiers), self.start)
             assets_by_identifier = {}
             for identifier in self.identifiers:
                 assets_by_identifier[identifier] = env.asset_finder.\
@@ -160,7 +162,8 @@ class SpecificEquityTrades(object):
             self.concurrent = kwargs.get('concurrent', False)
 
             self.identifiers = kwargs.get('sids', [1, 2])
-            env.update_asset_finder(identifiers=self.identifiers)
+            env.asset_finder = create_finder_from_index(
+                self.identifiers, self.start)
             assets_by_identifier = {}
             for identifier in self.identifiers:
                 assets_by_identifier[identifier] = env.asset_finder.\
