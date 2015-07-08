@@ -951,7 +951,6 @@ class TestGetDatetime(TestCase):
         algo = TradingAlgorithm(
             script=algo,
             sim_params=sim_params,
-            identifiers=[1]
         )
         algo.run(source)
         self.assertFalse(algo.first_bar)
@@ -1069,7 +1068,6 @@ class TestTradingControls(TestCase):
         self.check_algo_succeeds(algo, handle_data)
 
     def test_set_max_order_size(self):
-
         # Buy one share.
         def handle_data(algo, data):
             algo.order(algo.sid(self.sid), 1)
