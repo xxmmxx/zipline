@@ -192,6 +192,14 @@ class AssetFinder(object):
         c.execute(query, t)
         data = c.fetchone()
         if data:
+            if data['start_date_nano']:
+                data['start_date'] = pd.Timestamp(
+                    data['start_date_nano'], tz='UTC')
+            del data['start_date_nano']
+            if data['end_date_nano']:
+                data['end_date'] = pd.Timestamp(
+                    data['end_date_nano'], tz='UTC')
+            del data['end_date_nano']
             return Equity(**data)
 
     @lru_cache(maxsize=None)
@@ -204,6 +212,26 @@ class AssetFinder(object):
         c.execute(query, t)
         data = c.fetchone()
         if data:
+            if data['start_date_nano']:
+                data['start_date'] = pd.Timestamp(
+                    data['start_date_nano'], tz='UTC')
+            del data['start_date_nano']
+            if data['end_date_nano']:
+                data['end_date'] = pd.Timestamp(
+                    data['end_date_nano'], tz='UTC')
+            del data['end_date_nano']
+            if data['notice_date_nano']:
+                data['notice_date'] = pd.Timestamp(
+                    data['notice_date_nano'], tz='UTC')
+            del data['notice_date_nano']
+            if data['first_traded_nano']:
+                data['first_traded'] = pd.Timestamp(
+                    data['first_traded_nano'], tz='UTC')
+            del data['first_traded_nano']
+            if data['expiration_date_nano']:
+                data['expiration_date'] = pd.Timestamp(
+                    data['expiration_date_nano'], tz='UTC')
+            del data['expiration_date_nano']
             return Future(**data)
 
     @staticmethod
@@ -645,8 +673,9 @@ class AssetFinder(object):
                  asset.first_traded.value if asset.first_traded else None,
                  asset.exchange,
                  asset.root_symbol,
-                 asset.notice_date_nano if asset.notice_date else None,
-                 asset.expiration_date_nano if asset.expiration_date else None,
+                 asset.notice_date.value if asset.notice_date else None,
+                 asset.expiration_date.value
+                 if asset.expiration_date else None,
                  asset.contract_multiplier)
             c.execute("""INSERT INTO futures(
             sid,

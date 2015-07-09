@@ -432,9 +432,11 @@ class AssetFinderTestCase(TestCase):
                                foo_data="FOO",)
 
         # Test proper insertion
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
-        self.assertEqual('PLAY', finder.metadata_cache[0]['symbol'])
-        self.assertEqual('2015-01-01', finder.metadata_cache[0]['end_date'])
+        equity = finder.retrieve_asset(0)
+        self.assertIsInstance(equity, Equity)
+        self.assertEqual('PLAY', equity.symbol)
+        self.assertEqual(pd.Timestamp('2015-01-01', tz='UTC'),
+                         equity.end_date)
 
         # Test invalid field
         self.assertFalse('foo_data' in finder.metadata_cache[0])
@@ -446,7 +448,8 @@ class AssetFinderTestCase(TestCase):
                                end_date='2015-02-01',
                                symbol="PLAY",
                                exchange="NYSE",)
-        self.assertEqual('2015-02-01', finder.metadata_cache[0]['end_date'])
+        self.assertEqual(pd.Timestamp('2015-02-01', tz='UTC'),
+                         finder.metadata_cache[0]['end_date'])
         self.assertEqual('NYSE', finder.metadata_cache[0]['exchange'])
 
         # Check that old data survived
@@ -455,12 +458,16 @@ class AssetFinderTestCase(TestCase):
     def test_consume_metadata(self):
 
         # Test dict consumption
-        finder = AssetFinder({0: {'asset_type': 'equity'}})
+        finder = AssetFinder()
         dict_to_consume = {0: {'symbol': 'PLAY'},
                            1: {'symbol': 'MSFT'}}
         finder.consume_metadata(dict_to_consume)
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
-        self.assertEqual('PLAY', finder.metadata_cache[0]['symbol'])
+
+        equity = finder.retrieve_asset(0)
+        self.assertIsInstance(equity, Equity)
+        self.assertEqual('PLAY', equity.symbol)
+
+        finder = AssetFinder()
 
         # Test dataframe consumption
         df = pd.DataFrame(columns=['asset_name', 'exchange'], index=[0, 1])
@@ -471,11 +478,8 @@ class AssetFinderTestCase(TestCase):
         finder.consume_metadata(df)
         self.assertEqual('NASDAQ', finder.metadata_cache[0]['exchange'])
         self.assertEqual('Microsoft', finder.metadata_cache[1]['asset_name'])
-        # Check that old data survived
-        self.assertEqual('equity', finder.metadata_cache[0]['asset_type'])
 
     def test_consume_asset_as_identifier(self):
-
         # Build some end dates
         eq_end = pd.Timestamp('2012-01-01', tz='UTC')
         fut_end = pd.Timestamp('2008-01-01', tz='UTC')
