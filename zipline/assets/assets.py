@@ -100,7 +100,8 @@ class AssetFinder(object):
                  metadata=None,
                  allow_sid_assignment=True,
                  fuzzy_char=None,
-                 db_path=':memory:'):
+                 db_path=':memory:',
+                 create_table=True):
 
         self.fuzzy_char = fuzzy_char
 
@@ -115,7 +116,7 @@ class AssetFinder(object):
 
         self.conn = sqlite3.connect(db_path)
 
-        if db_path != ":memory":
+        if not create_table:
             return
 
         c = self.conn.cursor()
