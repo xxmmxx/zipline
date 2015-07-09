@@ -293,7 +293,7 @@ class AssetFinder(object):
         raises SymbolNotFound.
         """
         if as_of_date is not None:
-            as_of_date = normalize_date(as_of_date)
+            as_of_date = pd.Timestamp(normalize_date(as_of_date))
 
         c = self.conn.cursor()
         c.row_factory = dict_factory
@@ -333,7 +333,7 @@ class AssetFinder(object):
                 query = ("select sid from equities "
                          "where symbol=? " +
                          "and start_date_nano<=? " +
-                         "order by start_date_nano desc, end_date_nano desc" +
+                         "order by start_date_nano desc, end_date_nano desc " +
                          "limit 1")
                 c.execute(query, t)
                 data = c.fetchone()
