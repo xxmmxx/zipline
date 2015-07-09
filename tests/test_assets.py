@@ -506,8 +506,10 @@ class AssetFinderTestCase(TestCase):
         finder = AssetFinder(metadata=metadata, allow_sid_assignment=True)
 
         # Verify that Assets were built and different sids were assigned
-        play = finder.lookup_symbol('PLAY', datetime.now())
-        msft = finder.lookup_symbol('MSFT', datetime.now())
+        play = finder.lookup_symbol('PLAY',
+                                    pd.Timestamp(datetime.now(), tz='UTC'))
+        msft = finder.lookup_symbol('MSFT',
+                                    pd.Timestamp(datetime.now(), tz='UTC'))
         self.assertEqual('PLAY', play.symbol)
         self.assertIsNotNone(play.sid)
         self.assertNotEqual(play.sid, msft.sid)
