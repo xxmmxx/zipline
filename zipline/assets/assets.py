@@ -655,13 +655,13 @@ class AssetFinder(object):
             first_traded_nano,
             exchange)
             VALUES(?, ?, ?, ?, ?, ?, ?)""", t)
-            
+
             t = (asset.sid,
                  'equity')
             c.execute("""INSERT INTO asset_router(sid, asset_type)
             VALUES(?, ?)""", t)
             self.conn.commit()
-            
+
         elif asset_type.lower() == 'future':
             asset = Future(**entry)
             c = self.conn.cursor()
