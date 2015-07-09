@@ -294,9 +294,12 @@ class AssetFinder(object):
         c = self.conn.cursor()
         c.row_factory = dict_factory
         if as_of_date:
-            t = (symbol, as_of_date.value)
-            query = ("select sid from equities where " +
-                     "symbol=? and start_date_nano>=? limit 1")
+            t = (symbol, as_of_date.value, as_of_date.value)
+            query = ("select sid from equities "
+                     "where symbol=? " +
+                     "and start_date_nano<=? " +
+                     "and end_date_nano>=? " +
+                     "limit 1")
             c.execute(query, t)
             data = c.fetchone()
 
