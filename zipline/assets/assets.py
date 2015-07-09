@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from abc import ABCMeta
-from itertools import chain
 from numbers import Integral
 import numpy as np
 import operator
@@ -108,6 +107,10 @@ class AssetFinder(object):
         # sids. If False, metadata that does not contain a sid will raise an
         # exception when building assets.
         self.allow_sid_assignment = allow_sid_assignment
+
+        if allow_sid_assignment:
+            self.end_date_to_assign = normalize_date(
+                pd.Timestamp('now', tz='UTC'))
 
         self.conn = sqlite3.connect(':memory:')
 
@@ -676,11 +679,11 @@ class AssetFinder(object):
         try:
             entry['start_date'] = pd.Timestamp(entry['start_date'], tz='UTC')
         except KeyError:
-            pass
+            entry['start_date'] = pd.Timestamp(0, tz='UTC')
         try:
             entry['end_date'] = pd.Timestamp(entry['end_date'], tz='UTC')
         except KeyError:
-            pass
+            entry['end_date'] = self.end_date_to_assign
         try:
             entry['notice_date'] = pd.Timestamp(entry['notice_date'],
                                                 tz='UTC')

@@ -28,6 +28,7 @@ import pickle
 import uuid
 import warnings
 import pandas as pd
+from pandas.tseries.tools import normalize_date
 
 from nose_parameterized import parameterized
 
@@ -502,14 +503,15 @@ class AssetFinderTestCase(TestCase):
         metadata = {'PLAY': {'symbol': 'PLAY'},
                     'MSFT': {'symbol': 'MSFT'}}
 
+        today = normalize_date(pd.Timestamp('2015-07-09', tz='UTC'))
+
         # Build a finder that is allowed to assign sids
-        finder = AssetFinder(metadata=metadata, allow_sid_assignment=True)
+        finder = AssetFinder(metadata=metadata,
+                             allow_sid_assignment=True)
 
         # Verify that Assets were built and different sids were assigned
-        play = finder.lookup_symbol('PLAY',
-                                    pd.Timestamp(datetime.now(), tz='UTC'))
-        msft = finder.lookup_symbol('MSFT',
-                                    pd.Timestamp(datetime.now(), tz='UTC'))
+        play = finder.lookup_symbol('PLAY', today)
+        msft = finder.lookup_symbol('MSFT', today)
         self.assertEqual('PLAY', play.symbol)
         self.assertIsNotNone(play.sid)
         self.assertNotEqual(play.sid, msft.sid)
