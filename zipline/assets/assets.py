@@ -289,22 +289,34 @@ class AssetFinder(object):
         if as_of_date is not None:
             as_of_date = normalize_date(as_of_date)
 
-        if symbol not in self.sym_cache:
-            raise SymbolNotFound(symbol=symbol)
+        # TODO: Lookup SID
+        # select from securities where symbol = '' and > as_of_date
+        c = self.conn.cursor()
+        c.row_factory = dict_factory
+        if as_of_date:
+            t = (symbol, as_of_date.value)
+            query = ("select sid from equities where " +
+                     "symbol=? and start_date_nano>=? limit 1")
+            c.execute(query, t)
+            data = c.fetchone()
 
-        infos = self.sym_cache[symbol]
-        if as_of_date is None:
-            if len(infos) == 1:
-                return infos[0]
+            if data is None:
+                raise SymbolNotFound(symbol=symbol)
+            else:
+                return self.equity_for_id(data['sid'])
+        else:
+            t = (symbol,)
+            query = ("select sid from equities where symbol=?")
+            c.execute(query, t)
+            data = c.fetchone()
+
+            if len(data) == 1:
+                return self.equity_for_id(data['sid'])
+            elif not data:
+                raise SymbolNotFound(symbol=symbol)
             else:
                 raise MultipleSymbolsFound(symbol=symbol,
-                                           options=infos)
-
-        # Try to find symbol matching as_of_date
-        asset, _ = self._lookup_symbol_in_infos(infos, as_of_date)
-        if asset is None:
-            raise SymbolNotFound(symbol=symbol)
-        return asset
+                                           options=str(data))
 
     def lookup_symbol(self, symbol, as_of_date, fuzzy=None):
         """
