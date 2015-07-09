@@ -377,12 +377,19 @@ class AssetFinder(object):
         -------
         [Future]
         """
-        try:
-            return [c for c in self.future_chains_cache[root_symbol]
-                    if c.notice_date and (as_of_date < c.notice_date)
-                    and c.start_date and (c.start_date <= knowledge_date)]
-        except KeyError:
-            raise RootSymbolNotFound(root_symbol=root_symbol)
+        c = self.conn.cursor()
+        t = {'root_symbol': root_symbol,
+             'as_of_date': as_of_date.value,
+             'knowledge_date': knowledge_date.value}
+        c.execute("""
+        select sid from futures
+        where root_symbol=:root_symbol
+        and expiration_date_nano >= :as_of_date
+        and start_date_nano <= :knowledge_date
+        order by expiration_date_nano asc
+        """, t)
+        sids = [r[0] for r in c.fetchall()]
+        return [self.futures_contract_for_id(sid) for sid in sids]
 
     @property
     def sids(self):
