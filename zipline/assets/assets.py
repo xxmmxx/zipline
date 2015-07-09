@@ -289,24 +289,52 @@ class AssetFinder(object):
         if as_of_date is not None:
             as_of_date = normalize_date(as_of_date)
 
-        # TODO: Lookup SID
-        # select from securities where symbol = '' and > as_of_date
         c = self.conn.cursor()
         c.row_factory = dict_factory
+
         if as_of_date:
+            # If one SID exists for symbol, return that symbol
             t = (symbol, as_of_date.value, as_of_date.value)
             query = ("select sid from equities "
                      "where symbol=? " +
                      "and start_date_nano<=? " +
-                     "and end_date_nano>=? " +
-                     "limit 1")
+                     "and end_date_nano>=?")
             c.execute(query, t)
-            data = c.fetchone()
+            candidates = c.fetchall()
 
-            if data is None:
-                raise SymbolNotFound(symbol=symbol)
-            else:
-                return self.equity_for_id(data['sid'])
+            if len(candidates) == 1:
+                return self.equity_for_id(candidates[0]['sid'])
+
+            # If no SID exists for symbol, return SID with the
+            # highest-but-not-over end_date
+            if len(candidates) == 0:
+                t = (symbol, as_of_date.value)
+                query = ("select sid from equities "
+                         "where symbol=? " +
+                         "and start_date_nano<=? " +
+                         "order by end_date_nano desc " +
+                         "limit 1")
+                c.execute(query, t)
+                data = c.fetchone()
+
+                if data:
+                    return self.equity_for_id(data['sid'])
+
+            if len(candidates) > 1:
+                t = (symbol, as_of_date.value)
+                query = ("select sid from equities "
+                         "where symbol=? " +
+                         "and start_date_nano<=? " +
+                         "order by start_date_nano desc, end_date_nano desc" +
+                         "limit 1")
+                c.execute(query, t)
+                data = c.fetchone()
+
+                if data:
+                    return self.equity_for_id(data['sid'])
+
+            raise SymbolNotFound(symbol=symbol)
+
         else:
             t = (symbol,)
             query = ("select sid from equities where symbol=?")
