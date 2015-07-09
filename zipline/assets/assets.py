@@ -63,11 +63,39 @@ ASSET_FIELDS = [
 ]
 
 
+# Expected fields for an Asset's metadata
+ASSET_TABLE_FIELDS = [
+    'sid',
+    'symbol',
+    'asset_name',
+    'start_date',
+    'end_date',
+    'first_traded',
+    'exchange',
+]
+
+
+# Expected fields for an Asset's metadata
+FUTURE_TABLE_FIELDS = ASSET_TABLE_FIELDS + [
+    'root_symbol',
+    'notice_date',
+    'expiration_date',
+    'contract_multiplier',
+]
+
+EQUITY_TABLE_FIELDS = ASSET_TABLE_FIELDS
+
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
+
+
 class AssetFinder(object):
 
     def __init__(self, metadata=None, allow_sid_assignment=True):
 
-        self.cache = {}
         self.sym_cache = {}
         self.future_chains_cache = {}
         self.fuzzy_match = {}
@@ -77,13 +105,49 @@ class AssetFinder(object):
         # exception when building assets.
         self.allow_sid_assignment = allow_sid_assignment
 
+        self.conn = sqlite3.connect(':memory:')
+
+        c = self.conn.cursor()
+
+        c.execute("""
+        CREATE TABLE equities
+        (sid integer,
+        symbol text,
+        asset_name text,
+        start_date integer,
+        end_date integer,
+        first_traded integer,
+        exchange text
+        )""")
+
+        c.execute("""
+        CREATE TABLE futures
+        (sid integer,
+        symbol text,
+        asset_name text,
+        start_date integer,
+        end_date integer,
+        first_traded integer,
+        exchange text,
+        root_symbol text,
+        notice_date integer,
+        expiration_date integer,
+        contract_multiplier real
+        )""")
+
+        c.execute("""
+        CREATE TABLE asset_router
+        (sid integer,
+        asset_type text)
+        """)
+
+        self.conn.commit()
+
         # The AssetFinder also holds a nested-dict of all metadata for
         # reference when building Assets
         self.metadata_cache = {}
         if metadata is not None:
             self.consume_metadata(metadata)
-
-        self.populate_cache()
 
     def retrieve_asset(self, sid, default_none=False):
         if isinstance(sid, Asset):
@@ -95,6 +159,30 @@ class AssetFinder(object):
             return None
         else:
             raise SidNotFound(sid=sid)
+
+    @lru_cache(maxsize=None)
+    def equity_for_id(self, sid):
+        c = self.db_conn.cursor()
+        t = (sid,)
+        c.row_factory = dict_factory
+        query = 'select {0} from equities where sid=?'.\
+                format(", ".join(EQUITY_TABLE_FIELDS))
+        c.execute(query, t)
+        data = c.fetchone()
+        if data:
+            return Equity(**data)
+
+    @lru_cache(maxsize=None)
+    def futures_contract_for_id(self, contract_id):
+        c = self.db_conn.cursor()
+        t = (contract_id,)
+        c.row_factory = dict_factory
+        query = 'select {0} from futures where sid=?'.format(
+            ", ".join(FUTURE_TABLE_FIELDS))
+        c.execute(query, t)
+        data = c.fetchone()
+        if data:
+            return Future(**data)
 
     @staticmethod
     def _lookup_symbol_in_infos(infos, as_of_date):
