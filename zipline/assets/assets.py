@@ -320,6 +320,8 @@ class AssetFinder(object):
                 if data:
                     return self.equity_for_id(data['sid'])
 
+            # If multiple SIDs exist for symbol, return latest start_date with
+            # end_date as a tie-breaker
             if len(candidates) > 1:
                 t = (symbol, as_of_date.value)
                 query = ("select sid from equities "
