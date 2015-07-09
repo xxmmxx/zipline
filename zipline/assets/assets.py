@@ -240,48 +240,6 @@ class AssetFinder(object):
             del data['expiration_date_nano']
             return Future(**data)
 
-    @staticmethod
-    def _lookup_symbol_in_infos(infos, as_of_date):
-        """
-        Search a list of symbols matching a given asset for the most recent
-        known symbol as of as_of_date.
-
-        Returns a pair of (Asset, bool), representing the best match we
-        found for as_of_date, and whether or not that match was actually
-        trading at as_of_date.
-
-        If no entry in infos started before as_of_date, return (None, False).
-        """
-        # Sort entries by end_date before iterating.  If asset start and end
-        # dates were always disjoint, then we could sort by either start or
-        # end_date and get the same sorting.
-        infos = sorted(infos, key=operator.attrgetter('end_date'))
-
-        # Find the newest asset that started before as_of_date.
-        candidates = [i for i in infos
-                      if (i.start_date is None or i.start_date <= as_of_date)
-                      and (i.end_date is None or as_of_date <= i.end_date)]
-
-        # If one SID exists for symbol, return that symbol
-        if len(candidates) == 1:
-            return candidates[0], True
-
-        # If no SID exists for symbol, return SID with the
-        # highest-but-not-over end_date
-        if len(candidates) == 0:
-            candidates = [i for i in infos
-                          if i.end_date < as_of_date]
-            return (candidates[-1], False) if candidates else (None, False)
-
-        # If multiple SIDs exist for symbol, return latest start_date with
-        # end_date as a tie-breaker
-        if len(candidates) > 1:
-            best_candidate = sorted(
-                candidates,
-                key=lambda x: (x.start_date, x.end_date)
-            )[-1]
-            return best_candidate, True
-
     def lookup_symbol_resolve_multiple(self, symbol, as_of_date=None):
         """
         Return matching Asset of name symbol in database.
@@ -804,7 +762,48 @@ class AssetFinder(object):
             raise ConsumeAssetMetaDataError(obj=metadata)
 
     def clear_metadata(self):
-        self.metadata_cache = {}
+        """
+        Used for testing.
+        """
+        self.conn = sqlite3.connect(':memory:')
+
+        # Should factor out, duplicated by init.
+        c = self.conn.cursor()
+
+        c.execute("""
+        CREATE TABLE equities
+        (sid integer,
+        symbol text,
+        asset_name text,
+        start_date_nano integer,
+        end_date_nano integer,
+        first_traded_nano integer,
+        exchange text,
+        fuzzy text
+        )""")
+
+        c.execute("""
+        CREATE TABLE futures
+        (sid integer,
+        symbol text,
+        asset_name text,
+        start_date_nano integer,
+        end_date_nano integer,
+        first_traded_nano integer,
+        exchange text,
+        root_symbol text,
+        notice_date_nano integer,
+        expiration_date_nano integer,
+        contract_multiplier real
+        )""")
+
+        c.execute("""
+        CREATE TABLE asset_router
+        (sid integer,
+        asset_type text)
+        """)
+
+        self.conn.commit()
 
     def _insert_metadata_dataframe(self, dataframe):
         for identifier, row in dataframe.iterrows():
