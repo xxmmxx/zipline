@@ -575,7 +575,6 @@ class AssetFinder(object):
         # If symbols or Assets are provided, construction and mapping is
         # necessary
         self.consume_identifiers(index)
-        self.populate_cache()
 
         # Look up all Assets for mapping
         matches = []
