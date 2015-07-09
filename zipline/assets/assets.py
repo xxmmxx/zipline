@@ -18,8 +18,10 @@ from itertools import chain
 from numbers import Integral
 import numpy as np
 import operator
+import sqlite3
 import warnings
 
+from functools32 import lru_cache
 from logbook import Logger
 import pandas as pd
 from pandas.tseries.tools import normalize_date
@@ -149,10 +151,30 @@ class AssetFinder(object):
         if metadata is not None:
             self.consume_metadata(metadata)
 
+    @lru_cache(maxsize=None)
+    def asset_type_by_sid(self, sid):
+        c = self.conn.cursor()
+        t = (sid,)
+        c.row_factory = dict_factory
+        query = 'select asset_type from asset_router where sid=?'
+        c.execute(query, t)
+        data = c.fetchone()
+        if data is None:
+            return
+        return data['asset_type']
+
     def retrieve_asset(self, sid, default_none=False):
         if isinstance(sid, Asset):
             return sid
-        asset = self.cache.get(sid)
+
+        asset_type = self.asset_type_by_sid(sid)
+        if asset_type == 'equity':
+            asset = self.equity_for_id(sid)
+        elif asset_type == 'future':
+            asset = self.futures_contract_for_id(sid)
+        else:
+            asset = None
+
         if asset is not None:
             return asset
         elif default_none:
@@ -162,7 +184,7 @@ class AssetFinder(object):
 
     @lru_cache(maxsize=None)
     def equity_for_id(self, sid):
-        c = self.db_conn.cursor()
+        c = self.conn.cursor()
         t = (sid,)
         c.row_factory = dict_factory
         query = 'select {0} from equities where sid=?'.\
@@ -174,7 +196,7 @@ class AssetFinder(object):
 
     @lru_cache(maxsize=None)
     def futures_contract_for_id(self, contract_id):
-        c = self.db_conn.cursor()
+        c = self.conn.cursor()
         t = (contract_id,)
         c.row_factory = dict_factory
         query = 'select {0} from futures where sid=?'.format(
