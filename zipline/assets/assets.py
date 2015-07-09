@@ -115,6 +115,7 @@ class AssetFinder(object):
                 pd.Timestamp('now', tz='UTC'))
 
         self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
 
         if not create_table:
             return
@@ -556,7 +557,7 @@ class AssetFinder(object):
         # Return a list of the sids of the found assets
         return [asset.sid for asset in matches]
 
-    def insert_metadata(self, identifier, **kwargs):
+    def _insert_metadata(self, identifier, **kwargs):
         """
         Inserts the given metadata kwargs to the entry for the given
         identifier. Matching fields in the existing entry will be overwritten.
@@ -688,7 +689,6 @@ class AssetFinder(object):
                  'equity')
             c.execute("""INSERT INTO asset_router(sid, asset_type)
             VALUES(?, ?)""", t)
-            self.conn.commit()
 
         elif asset_type.lower() == 'future':
             asset = Future(**entry)
@@ -718,13 +718,11 @@ class AssetFinder(object):
             expiration_date_nano,
             contract_multiplier)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", t)
-            self.conn.commit()
 
             t = (asset.sid,
                  'future')
             c.execute("""INSERT INTO asset_router(sid, asset_type)
             VALUES(?, ?)""", t)
-            self.conn.commit()
         else:
             raise InvalidAssetType(asset_type=asset_type)
 
@@ -810,13 +808,20 @@ class AssetFinder(object):
 
         self.conn.commit()
 
+    # TODO this wrapper is so that commits can be done at the end.
+    def insert_metadata(self, identifier, **kwargs):
+        self._insert_metadata(identifier, **kwargs)
+        self.conn.commit()
+
     def _insert_metadata_dataframe(self, dataframe):
         for identifier, row in dataframe.iterrows():
-            self.insert_metadata(identifier, **row)
+            self._insert_metadata(identifier, **row)
+        self.conn.commit()
 
     def _insert_metadata_dict(self, dict):
         for identifier, entry in dict.items():
-            self.insert_metadata(identifier, **entry)
+            self._insert_metadata(identifier, **entry)
+        self.conn.commit()
 
     def _insert_metadata_readable(self, readable):
         for row in readable.read():
@@ -839,7 +844,8 @@ class AssetFinder(object):
                 identifier = metadata_dict['symbol']
             else:
                 raise ConsumeAssetMetaDataError(obj=row)
-            self.insert_metadata(identifier, **metadata_dict)
+            self._insert_metadata(identifier, **metadata_dict)
+        self.conn.commit()
 
 
 class AssetConvertible(with_metaclass(ABCMeta)):
