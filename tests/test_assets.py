@@ -487,7 +487,6 @@ class AssetFinderTestCase(TestCase):
         # Consume the Assets
         finder = AssetFinder()
         finder.consume_identifiers([equity_asset, future_asset])
-        finder.populate_cache()
 
         # Test equality with newly built Assets
         self.assertEqual(equity_asset, finder.retrieve_asset(1))

@@ -70,9 +70,9 @@ ASSET_TABLE_FIELDS = [
     'sid',
     'symbol',
     'asset_name',
-    'start_date',
-    'end_date',
-    'first_traded',
+    'start_date_nano',
+    'end_date_nano',
+    'first_traded_nano',
     'exchange',
 ]
 
@@ -80,8 +80,8 @@ ASSET_TABLE_FIELDS = [
 # Expected fields for an Asset's metadata
 FUTURE_TABLE_FIELDS = ASSET_TABLE_FIELDS + [
     'root_symbol',
-    'notice_date',
-    'expiration_date',
+    'notice_date_nano',
+    'expiration_date_nano',
     'contract_multiplier',
 ]
 
@@ -116,9 +116,9 @@ class AssetFinder(object):
         (sid integer,
         symbol text,
         asset_name text,
-        start_date integer,
-        end_date integer,
-        first_traded integer,
+        start_date_nano integer,
+        end_date_nano integer,
+        first_traded_nano integer,
         exchange text
         )""")
 
@@ -127,13 +127,13 @@ class AssetFinder(object):
         (sid integer,
         symbol text,
         asset_name text,
-        start_date integer,
-        end_date integer,
-        first_traded integer,
+        start_date_nano integer,
+        end_date_nano integer,
+        first_traded_nano integer,
         exchange text,
         root_symbol text,
-        notice_date integer,
-        expiration_date integer,
+        notice_date_nano integer,
+        expiration_date_nano integer,
         contract_multiplier real
         )""")
 
@@ -356,111 +356,6 @@ class AssetFinder(object):
         except KeyError:
             raise RootSymbolNotFound(root_symbol=root_symbol)
 
-    def populate_cache(self):
-        """
-        Populates the asset cache with all values in the assets
-        collection.
-        """
-
-        # Wipe caches before repopulating
-        self.cache = {}
-        self.sym_cache = {}
-        self.future_chains_cache = {}
-        self.fuzzy_match = {}
-
-        for identifier, row in self.metadata_cache.items():
-            asset = self._spawn_asset(identifier=identifier, **row)
-
-            # Insert asset into the various caches
-            self.cache[asset.sid] = asset
-
-            if asset.symbol is not '':
-                self.sym_cache.setdefault(asset.symbol, []).append(asset)
-
-            if isinstance(asset, Future) and asset.root_symbol is not '':
-                self.future_chains_cache.setdefault(asset.root_symbol,
-                                                    []).append(asset)
-
-        # Pre-sort the future chains, we assume in future lookups
-        # that they're ordered correctly.
-        self._sort_future_chains()
-
-    def _spawn_asset(self, identifier, **kwargs):
-
-        # If the file_name is in the kwargs, it will be used as the symbol
-        try:
-            kwargs['symbol'] = kwargs.pop('file_name')
-        except KeyError:
-            pass
-
-        # If the identifier coming in was a string and there is no defined
-        # symbol yet, set the symbol to the incoming identifier
-        try:
-            kwargs['symbol']
-            pass
-        except KeyError:
-            if isinstance(identifier, string_types):
-                kwargs['symbol'] = identifier
-
-        # If the company_name is in the kwargs, it may be the asset_name
-        try:
-            company_name = kwargs.pop('company_name')
-            try:
-                kwargs['asset_name']
-            except KeyError:
-                kwargs['asset_name'] = company_name
-        except KeyError:
-            pass
-
-        # If dates are given as nanos, pop them
-        try:
-            kwargs['start_date'] = kwargs.pop('start_date_nano')
-        except KeyError:
-            pass
-        try:
-            kwargs['end_date'] = kwargs.pop('end_date_nano')
-        except KeyError:
-            pass
-        try:
-            kwargs['notice_date'] = kwargs.pop('notice_date_nano')
-        except KeyError:
-            pass
-        try:
-            kwargs['expiration_date'] = kwargs.pop('expiration_date_nano')
-        except KeyError:
-            pass
-
-        # Process dates to Timestamps
-        try:
-            kwargs['start_date'] = pd.Timestamp(kwargs['start_date'], tz='UTC')
-        except KeyError:
-            pass
-        try:
-            kwargs['end_date'] = pd.Timestamp(kwargs['end_date'], tz='UTC')
-        except KeyError:
-            pass
-        try:
-            kwargs['notice_date'] = pd.Timestamp(kwargs['notice_date'],
-                                                 tz='UTC')
-        except KeyError:
-            pass
-        try:
-            kwargs['expiration_date'] = pd.Timestamp(kwargs['expiration_date'],
-                                                     tz='UTC')
-        except KeyError:
-            pass
-
-        # Build an Asset of the appropriate type, default to Equity
-        asset_type = kwargs.pop('asset_type', 'equity')
-        if asset_type.lower() == 'equity':
-            asset = Equity(**kwargs)
-        elif asset_type.lower() == 'future':
-            asset = Future(**kwargs)
-        else:
-            raise InvalidAssetType(asset_type=asset_type)
-
-        return asset
-
     @property
     def sids(self):
         return self.cache.keys()
@@ -646,6 +541,135 @@ class AssetFinder(object):
                     entry['sid'] = len(self.metadata_cache)
                 else:
                     raise SidAssignmentError(identifier=identifier)
+
+
+                # If the file_name is in the kwargs, it will be used as the symbol
+        try:
+            entry['symbol'] = entry.pop('file_name')
+        except KeyError:
+            pass
+
+        # If the identifier coming in was a string and there is no defined
+        # symbol yet, set the symbol to the incoming identifier
+        try:
+            entry['symbol']
+            pass
+        except KeyError:
+            if isinstance(identifier, string_types):
+                entry['symbol'] = identifier
+
+        # If the company_name is in the kwargs, it may be the asset_name
+        try:
+            company_name = entry.pop('company_name')
+            try:
+                entry['asset_name']
+            except KeyError:
+                entry['asset_name'] = company_name
+        except KeyError:
+            pass
+
+        # If dates are given as nanos, pop them
+        try:
+            entry['start_date'] = entry.pop('start_date_nano')
+        except KeyError:
+            pass
+        try:
+            entry['end_date'] = entry.pop('end_date_nano')
+        except KeyError:
+            pass
+        try:
+            entry['notice_date'] = entry.pop('notice_date_nano')
+        except KeyError:
+            pass
+        try:
+            entry['expiration_date'] = entry.pop('expiration_date_nano')
+        except KeyError:
+            pass
+
+        # Process dates to Timestamps
+        try:
+            entry['start_date'] = pd.Timestamp(entry['start_date'], tz='UTC')
+        except KeyError:
+            pass
+        try:
+            entry['end_date'] = pd.Timestamp(entry['end_date'], tz='UTC')
+        except KeyError:
+            pass
+        try:
+            entry['notice_date'] = pd.Timestamp(entry['notice_date'],
+                                                tz='UTC')
+        except KeyError:
+            pass
+        try:
+            entry['expiration_date'] = pd.Timestamp(entry['expiration_date'],
+                                                    tz='UTC')
+        except KeyError:
+            pass
+
+        # Build an Asset of the appropriate type, default to Equity
+        asset_type = entry.pop('asset_type', 'equity')
+        if asset_type.lower() == 'equity':
+            asset = Equity(**entry)
+            c = self.conn.cursor()
+            t = (asset.sid,
+                 asset.symbol,
+                 asset.asset_name,
+                 asset.start_date.value if asset.start_date else None,
+                 asset.end_date.value if asset.end_date else None,
+                 asset.first_traded.value if asset.first_traded else None,
+                 asset.exchange)
+            c.execute("""INSERT INTO equities(
+            sid,
+            symbol,
+            asset_name,
+            start_date_nano,
+            end_date_nano,
+            first_traded_nano,
+            exchange)
+            VALUES(?, ?, ?, ?, ?, ?, ?)""", t)
+            
+            t = (asset.sid,
+                 'equity')
+            c.execute("""INSERT INTO asset_router(sid, asset_type)
+            VALUES(?, ?)""", t)
+            self.conn.commit()
+            
+        elif asset_type.lower() == 'future':
+            asset = Future(**entry)
+            c = self.conn.cursor()
+            t = (asset.sid,
+                 asset.symbol,
+                 asset.asset_name,
+                 asset.start_date.value if asset.start_date else None,
+                 asset.end_date.value if asset.end_date else None,
+                 asset.first_traded.value if asset.first_traded else None,
+                 asset.exchange,
+                 asset.root_symbol,
+                 asset.notice_date_nano if asset.notice_date else None,
+                 asset.expiration_date_nano if asset.expiration_date else None,
+                 asset.contract_multiplier)
+            c.execute("""INSERT INTO futures(
+            sid,
+            symbol,
+            asset_name,
+            start_date_nano,
+            end_date_nano,
+            first_traded_nano,
+            exchange,
+            root_symbol,
+            notice_date_nano,
+            expiration_date_nano,
+            contract_multiplier)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", t)
+            self.conn.commit()
+
+            t = (asset.sid,
+                 'future')
+            c.execute("""INSERT INTO asset_router(sid, asset_type)
+            VALUES(?, ?)""", t)
+            self.conn.commit()
+        else:
+            raise InvalidAssetType(asset_type=asset_type)
 
         self.metadata_cache[identifier] = entry
 
