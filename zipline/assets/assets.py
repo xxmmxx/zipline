@@ -87,6 +87,7 @@ FUTURE_TABLE_FIELDS = ASSET_TABLE_FIELDS + [
 
 EQUITY_TABLE_FIELDS = ASSET_TABLE_FIELDS
 
+
 def dict_factory(cursor, row):
     d = {}
     for idx, col in enumerate(cursor.description):
@@ -96,11 +97,12 @@ def dict_factory(cursor, row):
 
 class AssetFinder(object):
 
-    def __init__(self, metadata=None, allow_sid_assignment=True):
+    def __init__(self,
+                 metadata=None,
+                 allow_sid_assignment=True,
+                 fuzzy_char=None):
 
-        self.sym_cache = {}
-        self.future_chains_cache = {}
-        self.fuzzy_match = {}
+        self.fuzzy_char = fuzzy_char
 
         # This flag controls if the AssetFinder is allowed to generate its own
         # sids. If False, metadata that does not contain a sid will raise an
@@ -119,7 +121,8 @@ class AssetFinder(object):
         start_date_nano integer,
         end_date_nano integer,
         first_traded_nano integer,
-        exchange text
+        exchange text,
+        fuzzy text
         )""")
 
         c.execute("""
@@ -341,17 +344,17 @@ class AssetFinder(object):
             t = (symbol,)
             query = ("select sid from equities where symbol=?")
             c.execute(query, t)
-            data = c.fetchone()
+            data = c.fetchall()
 
             if len(data) == 1:
-                return self.equity_for_id(data['sid'])
+                return self.equity_for_id(data[0]['sid'])
             elif not data:
                 raise SymbolNotFound(symbol=symbol)
             else:
                 raise MultipleSymbolsFound(symbol=symbol,
                                            options=str(data))
 
-    def lookup_symbol(self, symbol, as_of_date, fuzzy=None):
+    def lookup_symbol(self, symbol, as_of_date, fuzzy=False):
         """
         If a fuzzy string is provided, then we try various symbols based on
         the provided symbol.  This is to facilitate mapping from a broker's
@@ -369,29 +372,34 @@ class AssetFinder(object):
             except SymbolNotFound:
                 return None
         else:
-            try:
-                return self.fuzzy_match[(symbol, fuzzy, as_of_date)]
-            except KeyError:
-                # if symbol is CMCSA and fuzzy is '_', then
-                # try CMCSA, then CMCS_A, then CMC_SA, etc.
-                for fuzzy_symbol in chain(
-                        (symbol,),
-                        (symbol[:i] + fuzzy + symbol[i:]
-                         for i in range(len(symbol) - 1, 0, -1))):
+            c = self.conn.cursor()
+            c.row_factory = dict_factory
+            fuzzy = symbol.replace(self.fuzzy_char, '')
+            t = (fuzzy, as_of_date.value, as_of_date.value)
+            query = ("select sid from equities "
+                     "where fuzzy=? " +
+                     "and start_date_nano<=? " +
+                     "and end_date_nano>=?")
+            c.execute(query, t)
+            candidates = c.fetchall()
 
-                    infos = self.sym_cache.get(fuzzy_symbol)
-                    if infos:
-                        info, date_match = self._lookup_symbol_in_infos(
-                            infos,
-                            as_of_date,
-                        )
+            # If one SID exists for symbol, return that symbol
+            if len(candidates) == 1:
+                return self.equity_for_id(candidates[0]['sid'])
 
-                        if info is not None and date_match:
-                            self.fuzzy_match[(symbol, fuzzy, as_of_date)] = \
-                                info
-                            return info
-                else:
-                    self.fuzzy_match[(symbol, fuzzy, as_of_date)] = None
+            # If multiple SIDs exist for symbol, return latest start_date with
+            # end_date as a tie-breaker
+            if len(candidates) > 1:
+                t = (symbol, as_of_date.value)
+                query = ("select sid from equities "
+                         "where symbol=? " +
+                         "and start_date_nano<=? " +
+                         "order by start_date_nano desc, end_date_nano desc" +
+                         "limit 1")
+                c.execute(query, t)
+                data = c.fetchone()
+                if data:
+                    return self.equity_for_id(data['sid'])
 
     def _sort_future_chains(self):
         """ Sort by increasing expiration date the list of contracts
@@ -622,8 +630,7 @@ class AssetFinder(object):
                 else:
                     raise SidAssignmentError(identifier=identifier)
 
-
-                # If the file_name is in the kwargs, it will be used as the symbol
+        # If the file_name is in the kwargs, it will be used as the symbol
         try:
             entry['symbol'] = entry.pop('file_name')
         except KeyError:
@@ -689,6 +696,8 @@ class AssetFinder(object):
         # Build an Asset of the appropriate type, default to Equity
         asset_type = entry.pop('asset_type', 'equity')
         if asset_type.lower() == 'equity':
+            fuzzy = entry['symbol'].replace(self.fuzzy_char, '') \
+                if self.fuzzy_char else None
             asset = Equity(**entry)
             c = self.conn.cursor()
             t = (asset.sid,
@@ -697,7 +706,8 @@ class AssetFinder(object):
                  asset.start_date.value if asset.start_date else None,
                  asset.end_date.value if asset.end_date else None,
                  asset.first_traded.value if asset.first_traded else None,
-                 asset.exchange)
+                 asset.exchange,
+                 fuzzy)
             c.execute("""INSERT INTO equities(
             sid,
             symbol,
@@ -705,8 +715,9 @@ class AssetFinder(object):
             start_date_nano,
             end_date_nano,
             first_traded_nano,
-            exchange)
-            VALUES(?, ?, ?, ?, ?, ?, ?)""", t)
+            exchange,
+            fuzzy)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)""", t)
 
             t = (asset.sid,
                  'equity')

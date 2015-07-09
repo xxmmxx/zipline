@@ -287,7 +287,7 @@ class AssetFinderTestCase(TestCase):
                 for i in range(3)
             ]
         )
-        finder = AssetFinder(frame)
+        finder = AssetFinder(frame, fuzzy_char='@')
         asset_0, asset_1, asset_2 = (
             finder.retrieve_asset(i) for i in range(3)
         )
@@ -302,17 +302,15 @@ class AssetFinderTestCase(TestCase):
             # Adding an unnecessary fuzzy shouldn't matter.
             self.assertEqual(
                 asset_1,
-                finder.lookup_symbol('test@1', as_of, fuzzy='@')
+                finder.lookup_symbol('test@1', as_of, fuzzy=True)
             )
 
             # Shouldn't find this with no fuzzy_str passed.
             self.assertIsNone(finder.lookup_symbol('test1', as_of))
-            # Shouldn't find this with an incorrect fuzzy_str.
-            self.assertIsNone(finder.lookup_symbol('test1', as_of, fuzzy='*'))
-            # Should find it with the correct fuzzy_str.
+            # Should find exact match.
             self.assertEqual(
                 asset_1,
-                finder.lookup_symbol('test1', as_of, fuzzy='@'),
+                finder.lookup_symbol('test1', as_of, fuzzy=True),
             )
 
     def test_lookup_symbol_resolve_multiple(self):
