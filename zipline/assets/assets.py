@@ -99,7 +99,8 @@ class AssetFinder(object):
     def __init__(self,
                  metadata=None,
                  allow_sid_assignment=True,
-                 fuzzy_char=None):
+                 fuzzy_char=None,
+                 db_path=':memory:'):
 
         self.fuzzy_char = fuzzy_char
 
@@ -112,7 +113,10 @@ class AssetFinder(object):
             self.end_date_to_assign = normalize_date(
                 pd.Timestamp('now', tz='UTC'))
 
-        self.conn = sqlite3.connect(':memory:')
+        self.conn = sqlite3.connect(db_path)
+
+        if db_path != ":memory":
+            return
 
         c = self.conn.cursor()
 
