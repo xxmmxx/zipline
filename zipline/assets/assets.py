@@ -83,7 +83,13 @@ FUTURE_TABLE_FIELDS = ASSET_TABLE_FIELDS + [
     'contract_multiplier',
 ]
 
+FUTURES_BY_ID_QUERY = 'select {0} from futures where sid=?'.format(
+    ", ".join(FUTURE_TABLE_FIELDS))
+
 EQUITY_TABLE_FIELDS = ASSET_TABLE_FIELDS
+
+EQUITY_BY_ID_QUERY = 'select {0} from equities where sid=?'.format(
+    ", ".join(EQUITY_TABLE_FIELDS))
 
 
 def dict_factory(cursor, row):
@@ -202,13 +208,12 @@ class AssetFinder(object):
         else:
             raise SidNotFound(sid=sid)
 
+    @lru_cache(maxsize=None)
     def equity_for_id(self, sid):
         c = self.conn.cursor()
         t = (sid,)
         c.row_factory = dict_factory
-        query = 'select {0} from equities where sid=?'.\
-                format(", ".join(EQUITY_TABLE_FIELDS))
-        c.execute(query, t)
+        c.execute(EQUITY_BY_ID_QUERY, t)
         data = c.fetchone()
         if data:
             if data['start_date_nano']:
@@ -225,9 +230,7 @@ class AssetFinder(object):
         c = self.conn.cursor()
         t = (contract_id,)
         c.row_factory = dict_factory
-        query = 'select {0} from futures where sid=?'.format(
-            ", ".join(FUTURE_TABLE_FIELDS))
-        c.execute(query, t)
+        c.execute(FUTURES_BY_ID_QUERY, t)
         data = c.fetchone()
         if data:
             if data['start_date_nano']:
