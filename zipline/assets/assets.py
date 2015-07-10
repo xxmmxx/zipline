@@ -413,7 +413,10 @@ class AssetFinder(object):
 
     @property
     def sids(self):
-        return self.cache.keys()
+        c = self.conn.cursor()
+        query = 'select sid from asset_router'
+        c.execute(query)
+        return [r[0] for r in c.fetchall()]
 
     @property
     def assets(self):
