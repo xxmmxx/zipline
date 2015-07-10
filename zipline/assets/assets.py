@@ -134,6 +134,10 @@ class AssetFinder(object):
         fuzzy text
         )""")
 
+        c.execute('CREATE INDEX equities_sid on equities(sid)')
+        c.execute('CREATE INDEX equities_symbol on equities(symbol)')
+        c.execute('CREATE INDEX equities_fuzzy on equities(fuzzy)')
+
         c.execute("""
         CREATE TABLE futures
         (sid integer,
@@ -149,11 +153,16 @@ class AssetFinder(object):
         contract_multiplier real
         )""")
 
+        c.execute('CREATE INDEX futures_sid on futures(sid)')
+        c.execute('CREATE INDEX futures_root_symbol on equities(symbol)')
+
         c.execute("""
         CREATE TABLE asset_router
         (sid integer,
         asset_type text)
         """)
+
+        c.execute('CREATE INDEX asset_router_sid on asset_router(sid)')
 
         self.conn.commit()
 
