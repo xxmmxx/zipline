@@ -30,7 +30,6 @@ from zipline.errors import (
     ConsumeAssetMetaDataError,
     InvalidAssetType,
     MultipleSymbolsFound,
-    RootSymbolNotFound,
     SidAssignmentError,
     SidNotFound,
     SymbolNotFound,
@@ -176,14 +175,14 @@ class AssetFinder(object):
     def asset_type_by_sid(self, sid):
         c = self.conn.cursor()
         t = (sid,)
-        c.row_factory = dict_factory
         query = 'select asset_type from asset_router where sid=?'
         c.execute(query, t)
         data = c.fetchone()
         if data is None:
             return
-        return data['asset_type']
+        return data[0]
 
+    @lru_cache(maxsize=None)
     def retrieve_asset(self, sid, default_none=False):
         if isinstance(sid, Asset):
             return sid
@@ -203,7 +202,6 @@ class AssetFinder(object):
         else:
             raise SidNotFound(sid=sid)
 
-    @lru_cache(maxsize=None)
     def equity_for_id(self, sid):
         c = self.conn.cursor()
         t = (sid,)
@@ -223,7 +221,6 @@ class AssetFinder(object):
             del data['end_date_nano']
             return Equity(**data)
 
-    @lru_cache(maxsize=None)
     def futures_contract_for_id(self, contract_id):
         c = self.conn.cursor()
         t = (contract_id,)
@@ -376,15 +373,6 @@ class AssetFinder(object):
                 data = c.fetchone()
                 if data:
                     return self.equity_for_id(data['sid'])
-
-    def _sort_future_chains(self):
-        """ Sort by increasing expiration date the list of contracts
-        for each root symbol in the future cache.
-        """
-        notice_key = operator.attrgetter('notice_date')
-
-        for root_symbol in self.future_chains_cache:
-            self.future_chains_cache[root_symbol].sort(key=notice_key)
 
     def lookup_future_chain(self, root_symbol, as_of_date, knowledge_date):
         """ Return the futures chain for a given root symbol.
