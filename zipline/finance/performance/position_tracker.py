@@ -41,6 +41,8 @@ class PositionTracker(object):
             columns=zp.DIVIDEND_PAYMENT_FIELDS,
         )
         self._positions_store = zp.Positions()
+        # hot-wired in
+        self.data_portal = None
 
     @with_environment()
     def _retrieve_asset(self, sid, env=None):
@@ -130,15 +132,30 @@ class PositionTracker(object):
 
     @property
     def position_values(self):
-        iter_amount_price_multiplier = zip(
-            itervalues(self._position_amounts),
-            itervalues(self._position_last_sale_prices),
-            itervalues(self._position_value_multipliers),
-        )
-        return [
-            price * amount * multiplier for
-            price, amount, multiplier in iter_amount_price_multiplier
-        ]
+        # This flag is for benchmark iterator.
+        if self.data_portal:
+            amounts = self._position_amounts
+            if amounts:
+                amounts = np.array(self._position_amounts.values(),
+                                   dtype=float)
+                prices = np.array([
+                    self.data_portal.get_current_price_data(sid, 'close')
+                    for sid in self._position_amounts.keys()])
+                vals = amounts * prices
+            else:
+                vals = np.array([])
+            return vals
+        else:
+            # benchmark mode
+            iter_amount_price_multiplier = zip(
+                itervalues(self._position_amounts),
+                itervalues(self._position_last_sale_prices),
+                itervalues(self._position_value_multipliers),
+            )
+            return [
+                price * amount * multiplier for
+                price, amount, multiplier in iter_amount_price_multiplier
+            ]
 
     @property
     def position_exposures(self):
@@ -314,7 +331,8 @@ class PositionTracker(object):
             position = positions[sid]
             position.amount = pos.amount
             position.cost_basis = pos.cost_basis
-            position.last_sale_price = pos.last_sale_price
+            position.last_sale_price =\
+                self.data_portal.get_current_price_data(sid, 'close')
         return positions
 
     def get_positions_list(self):
