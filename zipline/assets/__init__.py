@@ -21,6 +21,8 @@ from ._assets import (
     CACHE_FILE_TEMPLATE
 )
 from .assets import (
+    AssetDBWriter,
+    AssetDBWriterFromDictionary,
     AssetFinder,
     AssetConvertible
 )
@@ -29,6 +31,8 @@ __all__ = [
     'Asset',
     'Equity',
     'Future',
+    'AssetDBWriter',
+    'AssetDBWriterFromDictionary',
     'AssetFinder',
     'AssetConvertible',
     'make_asset_array',
