@@ -53,6 +53,7 @@ ASSET_FIELDS = [
     'exchange',
     'notice_date',
     'expiration_date',
+    'auto_close_date',
     'contract_multiplier',
     # The following fields are for compatibility with other systems
     'file_name',  # Used as symbol
@@ -79,6 +80,7 @@ FUTURE_TABLE_FIELDS = ASSET_TABLE_FIELDS + [
     'root_symbol',
     'notice_date',
     'expiration_date',
+    'auto_close_date',
     'contract_multiplier',
 ]
 
@@ -182,6 +184,7 @@ class AssetFinder(object):
         root_symbol text,
         notice_date integer,
         expiration_date integer,
+        auto_close_date integer,
         contract_multiplier real
         )""")
 
@@ -300,6 +303,10 @@ class AssetFinder(object):
             if data['expiration_date']:
                 data['expiration_date'] = pd.Timestamp(
                     data['expiration_date'], tz='UTC')
+
+            if data['auto_close_date']:
+                data['auto_close_date'] = pd.Timestamp(
+                    data['auto_close_date'], tz='UTC')
 
             future = Future(**data)
         else:
@@ -742,6 +749,10 @@ class AssetFinder(object):
             entry['expiration_date'] = entry.pop('expiration_date_nano')
         except KeyError:
             pass
+        try:
+            entry['auto_close_date'] = entry.pop('auto_close_date_nano')
+        except KeyError:
+            pass
 
         # Process dates to Timestamps
         try:
@@ -763,6 +774,11 @@ class AssetFinder(object):
             pass
         try:
             entry['expiration_date'] = pd.Timestamp(entry['expiration_date'],
+                                                    tz='UTC')
+        except KeyError:
+            pass
+        try:
+            entry['auto_close_date'] = pd.Timestamp(entry['auto_close_date'],
                                                     tz='UTC')
         except KeyError:
             pass
@@ -815,6 +831,8 @@ class AssetFinder(object):
                  asset.notice_date.value if asset.notice_date else None,
                  asset.expiration_date.value
                  if asset.expiration_date else None,
+                 asset.auto_close_date.value
+                 if asset.auto_close_date else None,
                  asset.contract_multiplier)
             c.execute("""INSERT INTO futures(
             sid,
@@ -827,8 +845,9 @@ class AssetFinder(object):
             root_symbol,
             notice_date,
             expiration_date,
+            auto_close_date,
             contract_multiplier)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", t)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", t)
 
             t = (asset.sid,
                  'future')

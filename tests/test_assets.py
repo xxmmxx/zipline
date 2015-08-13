@@ -240,6 +240,7 @@ class TestFuture(TestCase):
         root_symbol='OM',
         notice_date=pd.Timestamp('2014-01-20', tz='UTC'),
         expiration_date=pd.Timestamp('2014-02-20', tz='UTC'),
+        auto_close_date=pd.Timestamp('2014-01-18', tz='UTC'),
         contract_multiplier=500
     )
 
@@ -257,6 +258,8 @@ class TestFuture(TestCase):
                         "tz='UTC')") in reprd)
         self.assertTrue("expiration_date=Timestamp('2014-02-20 00:00:00+0000'"
                         in reprd)
+        self.assertTrue("auto_close_date=Timestamp('2014-01-18 00:00:00+0000'"
+                        in reprd)
         self.assertTrue("contract_multiplier=500" in reprd)
 
     def test_reduce(self):
@@ -268,6 +271,7 @@ class TestFuture(TestCase):
         self.assertTrue('root_symbol' in dictd)
         self.assertTrue('notice_date' in dictd)
         self.assertTrue('expiration_date' in dictd)
+        self.assertTrue('auto_close_date' in dictd)
         self.assertTrue('contract_multiplier' in dictd)
 
         from_dict = Future.from_dict(dictd)
