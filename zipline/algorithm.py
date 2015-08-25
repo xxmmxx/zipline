@@ -320,7 +320,7 @@ class TradingAlgorithm(object):
         functions.
         """
         with ZiplineAPI(self):
-            self._initialize(self)
+            self._initialize(self, *args, **kwargs)
 
     def before_trading_start(self, data):
         if self._before_trading_start is None:
