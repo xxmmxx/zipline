@@ -30,7 +30,8 @@ def analyze(context, perf):
                  'v', markersize=10, color='k')
         plt.legend(loc=0)
     else:
-        ax2.annotate('No data captured using record().', xy=(0.35, 0.5))
-        log.info('No data captured using record().')
+        msg = 'AAPL, short_mavg & long_mavg data not captured using record().'
+        ax2.annotate(msg, xy=(0.1, 0.5))
+        log.info(msg)
 
     plt.show()

@@ -228,8 +228,10 @@ def run_pipeline(print_algo=True, **kwargs):
         algo_fname = kwargs['algofile']
         with open(algo_fname, 'r') as fd:
             algo_text = fd.read()
-
-        analyze_fname = os.path.splitext(algo_fname)[0] + '_analyze.py'
+        # Get the filepath to the 'analyze' file
+        # corresponding to this algorithm.
+        analyze_fname = os.path.dirname(algo_fname) + '/utils/' + \
+                        os.path.basename(algo_fname).split('.')[0] + '_analyze.py'
         if os.path.exists(analyze_fname):
             with open(analyze_fname, 'r') as fd:
                 # Simply append
