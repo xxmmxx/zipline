@@ -12,125 +12,50 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import collections
-
-from datetime import datetime
-
-import csv
-
-from functools import partial
-
-import requests
+import numpy as np
 import pandas as pd
 
-from six import iteritems
-
-from . loader_utils import (
-    date_conversion,
-    source_to_records,
-    Mapping
-)
-
-DailyReturn = collections.namedtuple('DailyReturn', ['date', 'returns'])
+import pandas_datareader.data as pd_reader
 
 
-class BenchmarkDataNotFoundError(Exception):
-    pass
-
-_BENCHMARK_MAPPING = {
-    # Need to add 'symbol'
-    'volume': (int, 'Volume'),
-    'open': (float, 'Open'),
-    'close': (float, 'Close'),
-    'high': (float, 'High'),
-    'low': (float, 'Low'),
-    'adj_close': (float, 'Adj Close'),
-    'date': (partial(date_conversion, date_pattern='%Y-%m-%d'), 'Date')
-}
-
-
-def benchmark_mappings():
-    return {key: Mapping(*value)
-            for key, value
-            in iteritems(_BENCHMARK_MAPPING)}
-
-
-def get_raw_benchmark_data(start_date, end_date, symbol):
-
-    # create benchmark files
-    # ^GSPC 19500103
-    params = collections.OrderedDict((
-        ('s', symbol),
-        # start_date month, zero indexed
-        ('a', start_date.month - 1),
-        # start_date day
-        ('b', start_date.day),
-        # start_date year
-        ('c', start_date.year),
-        # end_date month, zero indexed
-        ('d', end_date.month - 1),
-        # end_date day str(int(todate[6:8])) #day
-        ('e', end_date.day),
-        # end_date year str(int(todate[0:4]))
-        ('f', end_date.year),
-        # daily frequency
-        ('g', 'd'),
-    ))
-
-    res = requests.get('http://ichart.finance.yahoo.com/table.csv',
-                       params=params, stream=True)
-
-    if not res.ok:
-        raise BenchmarkDataNotFoundError("""
-No benchmark data found for date range.
-start_date={start_date}, end_date={end_date}, url={url}""".strip().
-                                         format(start_date=start_date,
-                                                end_date=end_date,
-                                                url=res.url))
-
-    return csv.DictReader(res.text.splitlines())
-
-
-def get_benchmark_data(symbol, start_date=None, end_date=None):
+def get_benchmark_returns(symbol, first_date, last_date):
     """
-    Benchmarks from Yahoo.
+    Get a Series of benchmark returns from Google associated with `symbol`.
+    Default is `SPY`.
+
+    Parameters
+    ----------
+    symbol : str
+        Benchmark symbol for which we're getting the returns.
+    first_date : pd.Timestamp
+        First date for which we want to get data.
+    last_date : pd.Timestamp
+        Last date for which we want to get data.
+
+    The furthest date that Google goes back to is 1993-02-01. It has missing
+    data for 2008-12-15, 2009-08-11, and 2012-02-02, so we add data for the
+    dates for which Google is missing data.
+
+    We're also limited to 4000 days worth of data per request. If we make a
+    request for data that extends past 4000 trading days, we'll still only
+    receive 4000 days of data.
+
+    first_date is **not** included because we need the close from day N - 1 to
+    compute the returns for day N.
     """
-    if start_date is None:
-        start_date = datetime(year=1950, month=1, day=3)
-    if end_date is None:
-        end_date = datetime.utcnow()
+    data = pd_reader.DataReader(
+        symbol,
+        'google',
+        first_date,
+        last_date
+    )
 
-    raw_benchmark_data = get_raw_benchmark_data(start_date, end_date, symbol)
+    data = data['Close']
 
-    mappings = benchmark_mappings()
+    data[pd.Timestamp('2008-12-15')] = np.nan
+    data[pd.Timestamp('2009-08-11')] = np.nan
+    data[pd.Timestamp('2012-02-02')] = np.nan
 
-    return source_to_records(mappings, raw_benchmark_data)
+    data = data.fillna(method='ffill')
 
-
-def get_benchmark_returns(symbol, start_date=None, end_date=None):
-    """
-    Returns a list of return percentages in chronological order.
-    """
-    if start_date is None:
-        start_date = datetime(year=1950, month=1, day=3)
-    if end_date is None:
-        end_date = datetime.utcnow()
-
-    # Get the benchmark data and convert it to a list in chronological order.
-    data_points = list(get_benchmark_data(symbol, start_date, end_date))
-    data_points.reverse()
-
-    # Calculate the return percentages.
-    benchmark_returns = []
-    for i, data_point in enumerate(data_points):
-        if i == 0:
-            curr_open = data_points[i]['open']
-            returns = (data_points[i]['close'] - curr_open) / curr_open
-        else:
-            prev_close = data_points[i - 1]['close']
-            returns = (data_point['close'] - prev_close) / prev_close
-        date = pd.tseries.tools.normalize_date(data_point['date'])
-        daily_return = DailyReturn(date=date, returns=returns)
-        benchmark_returns.append(daily_return)
-
-    return benchmark_returns
+    return data.sort_index().tz_localize('UTC').pct_change(1).iloc[1:]

@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2016 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,1273 +12,2095 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from unittest import TestCase
-from itertools import product
 from textwrap import dedent
-import warnings
 
 from nose_parameterized import parameterized
 import numpy as np
+from numpy import nan
 import pandas as pd
-from pandas.util.testing import assert_frame_equal
+from six import iteritems
 
-from zipline.history import history
-from zipline.history.history_container import HistoryContainer
-from zipline.protocol import BarData
-import zipline.utils.factory as factory
 from zipline import TradingAlgorithm
-from zipline.finance.trading import (
-    SimulationParameters,
-    TradingEnvironment,
-    with_environment,
+from zipline._protocol import handle_non_market_minutes, BarData
+from zipline.assets import Asset, Equity
+from zipline.errors import (
+    HistoryInInitialize,
+    HistoryWindowStartsBeforeData,
 )
-from zipline.errors import IncompatibleHistoryFrequency
-
-from zipline.sources import RandomWalkSource, DataFrameSource
-
-from .history_cases import (
-    HISTORY_CONTAINER_TEST_CASES,
+from zipline.finance.trading import SimulationParameters
+from zipline.finance.asset_restrictions import NoRestrictions
+from zipline.testing import (
+    create_minute_df_for_asset,
+    str_to_seconds,
+    MockDailyBarReader,
+)
+from zipline.testing.fixtures import (
+    WithCreateBarData,
+    WithDataPortal,
+    ZiplineTestCase,
+    alias,
 )
 
-# Cases are over the July 4th holiday, to ensure use of trading calendar.
 
-#      March 2013
-# Su Mo Tu We Th Fr Sa
-#                 1  2
-#  3  4  5  6  7  8  9
-# 10 11 12 13 14 15 16
-# 17 18 19 20 21 22 23
-# 24 25 26 27 28 29 30
-# 31
-#      April 2013
-# Su Mo Tu We Th Fr Sa
-#     1  2  3  4  5  6
-#  7  8  9 10 11 12 13
-# 14 15 16 17 18 19 20
-# 21 22 23 24 25 26 27
-# 28 29 30
-#
-#       May 2013
-# Su Mo Tu We Th Fr Sa
-#           1  2  3  4
-#  5  6  7  8  9 10 11
-# 12 13 14 15 16 17 18
-# 19 20 21 22 23 24 25
-# 26 27 28 29 30 31
-#
-#      June 2013
-# Su Mo Tu We Th Fr Sa
-#                    1
-#  2  3  4  5  6  7  8
-#  9 10 11 12 13 14 15
-# 16 17 18 19 20 21 22
-# 23 24 25 26 27 28 29
-# 30
-#      July 2013
-# Su Mo Tu We Th Fr Sa
-#     1  2  3  4  5  6
-#  7  8  9 10 11 12 13
-# 14 15 16 17 18 19 20
-# 21 22 23 24 25 26 27
-# 28 29 30 31
-#
-# Times to be converted via:
-# pd.Timestamp('2013-07-05 9:31', tz='US/Eastern').tz_convert('UTC')},
+OHLC = ['open', 'high', 'low', 'close']
+OHLCP = OHLC + ['price']
+ALL_FIELDS = OHLCP + ['volume']
 
-INDEX_TEST_CASES_RAW = {
-    'week of daily data': {
-        'input': {'bar_count': 5,
-                  'frequency': '1d',
-                  'algo_dt': '2013-07-05 9:31AM'},
-        'expected': [
-            '2013-06-28 4:00PM',
-            '2013-07-01 4:00PM',
-            '2013-07-02 4:00PM',
-            '2013-07-03 1:00PM',
-            '2013-07-05 9:31AM',
-        ]
-    },
-    'five minutes on july 5th open': {
-        'input': {'bar_count': 5,
-                  'frequency': '1m',
-                  'algo_dt': '2013-07-05 9:31AM'},
-        'expected': [
-            '2013-07-03 12:57PM',
-            '2013-07-03 12:58PM',
-            '2013-07-03 12:59PM',
-            '2013-07-03 1:00PM',
-            '2013-07-05 9:31AM',
-        ]
-    },
+
+class WithHistory(WithCreateBarData, WithDataPortal):
+    TRADING_START_DT = TRADING_ENV_MIN_DATE = START_DATE = pd.Timestamp(
+        '2014-01-03',
+        tz='UTC',
+    )
+    TRADING_END_DT = END_DATE = pd.Timestamp('2016-01-29', tz='UTC')
+
+    SPLIT_ASSET_SID = 4
+    DIVIDEND_ASSET_SID = 5
+    MERGER_ASSET_SID = 6
+    HALF_DAY_TEST_ASSET_SID = 7
+    SHORT_ASSET_SID = 8
+    # asset1:
+    # - 2014-03-01 (rounds up to TRADING_START_DT) to 2016-01-29.
+    # - every minute/day.
+
+    # asset2:
+    # - 2015-01-05 to 2015-12-31
+    # - every minute/day.
+
+    # asset3:
+    # - 2015-01-05 to 2015-12-31
+    # - trades every 10 minutes
+
+    # SPLIT_ASSET:
+    # - 2015-01-04 to 2015-12-31
+    # - trades every minute
+    # - splits on 2015-01-05 and 2015-01-06
+
+    # DIVIDEND_ASSET:
+    # - 2015-01-04 to 2015-12-31
+    # - trades every minute
+    # - dividends on 2015-01-05 and 2015-01-06
+
+    # MERGER_ASSET
+    # - 2015-01-04 to 2015-12-31
+    # - trades every minute
+    # - merger on 2015-01-05 and 2015-01-06
+    @classmethod
+    def init_class_fixtures(cls):
+        super(WithHistory, cls).init_class_fixtures()
+        cls.trading_days = cls.trading_calendar.sessions_in_range(
+            cls.TRADING_START_DT,
+            cls.TRADING_END_DT
+        )
+
+        cls.ASSET1 = cls.asset_finder.retrieve_asset(1)
+        cls.ASSET2 = cls.asset_finder.retrieve_asset(2)
+        cls.ASSET3 = cls.asset_finder.retrieve_asset(3)
+        cls.SPLIT_ASSET = cls.asset_finder.retrieve_asset(
+            cls.SPLIT_ASSET_SID,
+        )
+        cls.DIVIDEND_ASSET = cls.asset_finder.retrieve_asset(
+            cls.DIVIDEND_ASSET_SID,
+        )
+        cls.MERGER_ASSET = cls.asset_finder.retrieve_asset(
+            cls.MERGER_ASSET_SID,
+        )
+        cls.HALF_DAY_TEST_ASSET = cls.asset_finder.retrieve_asset(
+            cls.HALF_DAY_TEST_ASSET_SID,
+        )
+        cls.SHORT_ASSET = cls.asset_finder.retrieve_asset(
+            cls.SHORT_ASSET_SID,
+        )
+
+    @classmethod
+    def make_equity_info(cls):
+        jan_5_2015 = pd.Timestamp('2015-01-05', tz='UTC')
+        day_after_12312015 = pd.Timestamp('2016-01-04', tz='UTC')
+
+        return pd.DataFrame.from_dict(
+            {
+                1: {
+                    'start_date': pd.Timestamp('2014-01-03', tz='UTC'),
+                    'end_date': cls.TRADING_END_DT,
+                    'symbol': 'ASSET1',
+                    'exchange': "TEST",
+                },
+                2: {
+                    'start_date': jan_5_2015,
+                    'end_date': day_after_12312015,
+                    'symbol': 'ASSET2',
+                    'exchange': "TEST",
+                },
+                3: {
+                    'start_date': jan_5_2015,
+                    'end_date': day_after_12312015,
+                    'symbol': 'ASSET3',
+                    'exchange': "TEST",
+                },
+                cls.SPLIT_ASSET_SID: {
+                    'start_date': jan_5_2015,
+                    'end_date': day_after_12312015,
+                    'symbol': 'SPLIT_ASSET',
+                    'exchange': "TEST",
+                },
+                cls.DIVIDEND_ASSET_SID: {
+                    'start_date': jan_5_2015,
+                    'end_date': day_after_12312015,
+                    'symbol': 'DIVIDEND_ASSET',
+                    'exchange': "TEST",
+                },
+                cls.MERGER_ASSET_SID: {
+                    'start_date': jan_5_2015,
+                    'end_date': day_after_12312015,
+                    'symbol': 'MERGER_ASSET',
+                    'exchange': "TEST",
+                },
+                cls.HALF_DAY_TEST_ASSET_SID: {
+                    'start_date': pd.Timestamp('2014-07-02', tz='UTC'),
+                    'end_date': day_after_12312015,
+                    'symbol': 'HALF_DAY_TEST_ASSET',
+                    'exchange': "TEST",
+                },
+                cls.SHORT_ASSET_SID: {
+                    'start_date': pd.Timestamp('2015-01-05', tz='UTC'),
+                    'end_date': pd.Timestamp('2015-01-06', tz='UTC'),
+                    'symbol': 'SHORT_ASSET',
+                    'exchange': "TEST",
+                }
+            },
+            orient='index',
+        )
+
+    @classmethod
+    def make_splits_data(cls):
+        return pd.DataFrame([
+            {
+                'effective_date': str_to_seconds('2015-01-06'),
+                'ratio': 0.25,
+                'sid': cls.SPLIT_ASSET_SID,
+            },
+            {
+                'effective_date': str_to_seconds('2015-01-07'),
+                'ratio': 0.5,
+                'sid': cls.SPLIT_ASSET_SID,
+            },
+        ])
+
+    @classmethod
+    def make_mergers_data(cls):
+        return pd.DataFrame([
+            {
+                'effective_date': str_to_seconds('2015-01-06'),
+                'ratio': 0.25,
+                'sid': cls.MERGER_ASSET_SID,
+            },
+            {
+                'effective_date': str_to_seconds('2015-01-07'),
+                'ratio': 0.5,
+                'sid': cls.MERGER_ASSET_SID,
+            }
+        ])
+
+    @classmethod
+    def make_dividends_data(cls):
+        return pd.DataFrame([
+            {
+                # only care about ex date, the other dates don't matter here
+                'ex_date':
+                    pd.Timestamp('2015-01-06', tz='UTC').to_datetime64(),
+                'record_date':
+                    pd.Timestamp('2015-01-06', tz='UTC').to_datetime64(),
+                'declared_date':
+                    pd.Timestamp('2015-01-06', tz='UTC').to_datetime64(),
+                'pay_date':
+                    pd.Timestamp('2015-01-06', tz='UTC').to_datetime64(),
+                'amount': 2.0,
+                'sid': cls.DIVIDEND_ASSET_SID,
+            },
+            {
+                'ex_date':
+                    pd.Timestamp('2015-01-07', tz='UTC').to_datetime64(),
+                'record_date':
+                    pd.Timestamp('2015-01-07', tz='UTC').to_datetime64(),
+                'declared_date':
+                    pd.Timestamp('2015-01-07', tz='UTC').to_datetime64(),
+                'pay_date':
+                    pd.Timestamp('2015-01-07', tz='UTC').to_datetime64(),
+                'amount': 4.0,
+                'sid': cls.DIVIDEND_ASSET_SID,
+            }],
+            columns=[
+                'ex_date',
+                'record_date',
+                'declared_date',
+                'pay_date',
+                'amount',
+                'sid'],
+        )
+
+    @classmethod
+    def make_adjustment_writer_equity_daily_bar_reader(cls):
+        return MockDailyBarReader()
+
+    def verify_regular_dt(self, idx, dt, mode, fields=None, assets=None):
+        if mode == 'daily':
+            freq = '1d'
+        else:
+            freq = '1m'
+
+        cal = self.trading_calendar
+        equity_cal = self.trading_calendars[Equity]
+
+        def reindex_to_primary_calendar(a, field):
+            """
+            Reindex an array of prices from a window on the NYSE
+            calendar by the window on the primary calendar with the same
+            dt and window size.
+            """
+            if mode == 'daily':
+                dts = cal.sessions_window(dt, -9)
+
+                # `dt` may not be a session on the equity calendar, so
+                # find the next valid session.
+                equity_sess = equity_cal.minute_to_session_label(dt)
+                equity_dts = equity_cal.sessions_window(equity_sess, -9)
+            elif mode == 'minute':
+                dts = cal.minutes_window(dt, -10)
+                equity_dts = equity_cal.minutes_window(dt, -10)
+
+            output = pd.Series(
+                index=equity_dts,
+                data=a,
+            ).reindex(dts)
+
+            # Fill after reindexing, to ensure we don't forward fill
+            # with values that are being dropped.
+            if field == 'volume':
+                return output.fillna(0)
+            elif field == 'price':
+                return output.fillna(method='ffill')
+            else:
+                return output
+
+        fields = fields if fields is not None else ALL_FIELDS
+        assets = assets if assets is not None else [self.ASSET2, self.ASSET3]
+
+        bar_data = self.create_bardata(
+            simulation_dt_func=lambda: dt,
+        )
+        check_internal_consistency(
+            bar_data, assets, fields, 10, freq
+        )
+
+        for field in fields:
+            for asset in assets:
+                asset_series = bar_data.history(asset, field, 10, freq)
+
+                base = MINUTE_FIELD_INFO[field] + 2
+
+                if idx < 9:
+                    missing_count = 9 - idx
+                    present_count = 9 - missing_count
+
+                    if field in OHLCP:
+                        if asset == self.ASSET2:
+                            # asset2 should have some leading nans
+                            np.testing.assert_array_equal(
+                                np.full(missing_count, np.nan),
+                                asset_series[0:missing_count]
+                            )
+
+                            # asset2 should also have some real values
+                            np.testing.assert_array_equal(
+                                np.array(range(base,
+                                               base + present_count + 1)),
+                                asset_series[(9 - present_count):]
+                            )
+
+                        if asset == self.ASSET3:
+                            # asset3 should be NaN the entire time
+                            np.testing.assert_array_equal(
+                                np.full(10, np.nan),
+                                asset_series
+                            )
+                    elif field == 'volume':
+                        if asset == self.ASSET2:
+                            # asset2 should have some zeros (instead of nans)
+                            np.testing.assert_array_equal(
+                                np.zeros(missing_count),
+                                asset_series[0:missing_count]
+                            )
+
+                            # and some real values
+                            np.testing.assert_array_equal(
+                                np.array(
+                                    range(base, base + present_count + 1)
+                                ) * 100,
+                                asset_series[(9 - present_count):]
+                            )
+
+                        if asset == self.ASSET3:
+                            # asset3 is all zeros, no volume yet
+                            np.testing.assert_array_equal(
+                                np.zeros(10),
+                                asset_series
+                            )
+                else:
+                    # asset3 should have data every 10 minutes
+                    # construct an array full of nans, put something in the
+                    # right slot, and test for comparison
+
+                    position_from_end = ((idx + 1) % 10) + 1
+
+                    # asset3's baseline data is 9 NaNs, then 11, then 9 NaNs,
+                    # then 21, etc.  for idx 9 to 19, value_for_asset3 should
+                    # be a baseline of 11 (then adjusted for the individual
+                    # field), thus the rounding down to the nearest 10.
+                    value_for_asset3 = (((idx + 1) // 10) * 10) + \
+                        MINUTE_FIELD_INFO[field] + 1
+
+                    if field in OHLC:
+                        asset3_answer_key = np.full(10, np.nan)
+                        asset3_answer_key[-position_from_end] = \
+                            value_for_asset3
+                        asset3_answer_key = reindex_to_primary_calendar(
+                            asset3_answer_key,
+                            field,
+                        )
+
+                        if asset == self.ASSET2:
+                            np.testing.assert_array_equal(
+                                reindex_to_primary_calendar(
+                                    np.array(
+                                        range(base + idx - 9, base + idx + 1)
+                                    ),
+                                    field,
+                                ),
+                                asset_series
+                            )
+
+                        if asset == self.ASSET3:
+                            np.testing.assert_array_equal(
+                                asset3_answer_key,
+                                asset_series
+                            )
+                    elif field == 'volume':
+                        asset3_answer_key = np.zeros(10)
+                        asset3_answer_key[-position_from_end] = \
+                            value_for_asset3 * 100
+                        asset3_answer_key = reindex_to_primary_calendar(
+                            asset3_answer_key,
+                            field,
+                        )
+
+                        if asset == self.ASSET2:
+                            np.testing.assert_array_equal(
+                                reindex_to_primary_calendar(
+                                    np.array(
+                                        range(base + idx - 9, base + idx + 1)
+                                    ) * 100,
+                                    field,
+                                ),
+                                asset_series
+                            )
+
+                        if asset == self.ASSET3:
+                            np.testing.assert_array_equal(
+                                asset3_answer_key,
+                                asset_series
+                            )
+                    elif field == 'price':
+                        # price is always forward filled
+
+                        # asset2 has prices every minute, so it's easy
+
+                        if asset == self.ASSET2:
+                            # at idx 9, the data is 2 to 11
+                            np.testing.assert_array_equal(
+                                reindex_to_primary_calendar(
+                                    range(idx - 7, idx + 3),
+                                    field=field,
+                                ),
+                                asset_series
+                            )
+
+                        if asset == self.ASSET3:
+                            # Second part begins on the session after
+                            # `position_from_end` on the NYSE calendar.
+                            second_begin = (
+                                dt - equity_cal.day * (position_from_end - 1)
+                            )
+
+                            # First part goes up until the start of the
+                            # second part, because we forward-fill.
+                            first_end = second_begin - cal.day
+
+                            first_part = asset_series[:first_end]
+                            second_part = asset_series[second_begin:]
+
+                            decile_count = ((idx + 1) // 10)
+
+                            # in our test data, asset3 prices will be nine
+                            # NaNs, then ten 11s, ten 21s, ten 31s...
+
+                            if len(second_part) >= 10:
+                                np.testing.assert_array_equal(
+                                    np.full(len(first_part), np.nan),
+                                    first_part
+                                )
+                            elif decile_count == 1:
+                                np.testing.assert_array_equal(
+                                    np.full(len(first_part), np.nan),
+                                    first_part
+                                )
+
+                                np.testing.assert_array_equal(
+                                    np.array([11] * len(second_part)),
+                                    second_part
+                                )
+                            else:
+                                np.testing.assert_array_equal(
+                                    np.array([decile_count * 10 - 9] *
+                                             len(first_part)),
+                                    first_part
+                                )
+
+                                np.testing.assert_array_equal(
+                                    np.array([decile_count * 10 + 1] *
+                                             len(second_part)),
+                                    second_part
+                                )
+
+
+def check_internal_consistency(bar_data, assets, fields, bar_count, freq):
+    if isinstance(assets, Asset):
+        asset_list = [assets]
+    else:
+        asset_list = assets
+
+    if isinstance(fields, str):
+        field_list = [fields]
+    else:
+        field_list = fields
+
+    multi_field_dict = {
+        asset: bar_data.history(asset, field_list, bar_count, freq)
+        for asset in asset_list
+    }
+
+    multi_asset_dict = {
+        field: bar_data.history(asset_list, field, bar_count, freq)
+        for field in fields
+    }
+
+    panel = bar_data.history(asset_list, field_list, bar_count, freq)
+
+    for field in field_list:
+        # make sure all the different query forms are internally
+        # consistent
+        for asset in asset_list:
+            series = bar_data.history(asset, field, bar_count, freq)
+
+            np.testing.assert_array_equal(
+                series,
+                multi_asset_dict[field][asset]
+            )
+
+            np.testing.assert_array_equal(
+                series,
+                multi_field_dict[asset][field]
+            )
+
+            np.testing.assert_array_equal(
+                series,
+                panel[field][asset]
+            )
+
+
+# each minute's OHLCV data has a consistent offset for each field.
+# for example, the open is always 1 higher than the close, the high
+# is always 2 higher than the close, etc.
+MINUTE_FIELD_INFO = {
+    'open': 1,
+    'high': 2,
+    'low': -1,
+    'close': 0,
+    'price': 0,
+    'volume': 0,      # unused, later we'll multiply by 100
 }
 
 
-def to_timestamp(dt_str):
-    return pd.Timestamp(dt_str, tz='US/Eastern').tz_convert('UTC')
+class MinuteEquityHistoryTestCase(WithHistory, ZiplineTestCase):
 
-
-def convert_cases(cases):
-    """
-    Convert raw strings to values comparable with system data.
-    """
-    cases = cases.copy()
-    for case in cases.values():
-        case['input']['algo_dt'] = to_timestamp(case['input']['algo_dt'])
-        case['expected'] = pd.DatetimeIndex([to_timestamp(dt_str) for dt_str
-                                             in case['expected']])
-    return cases
-
-INDEX_TEST_CASES = convert_cases(INDEX_TEST_CASES_RAW)
-
-
-def get_index_at_dt(case_input):
-    history_spec = history.HistorySpec(
-        case_input['bar_count'],
-        case_input['frequency'],
-        None,
-        False,
-        data_frequency='minute',
-    )
-    return history.index_at_dt(history_spec, case_input['algo_dt'])
-
-
-class TestHistoryIndex(TestCase):
+    EQUITY_DAILY_BAR_SOURCE_FROM_MINUTE = True
+    DATA_PORTAL_FIRST_TRADING_DAY = alias('TRADING_START_DT')
 
     @classmethod
-    def setUpClass(cls):
-        cls.environment = TradingEnvironment.instance()
-
-    @parameterized.expand(
-        [(name, case['input'], case['expected'])
-         for name, case in INDEX_TEST_CASES.items()]
-    )
-    def test_index_at_dt(self, name, case_input, expected):
-        history_index = get_index_at_dt(case_input)
-
-        history_series = pd.Series(index=history_index)
-        expected_series = pd.Series(index=expected)
-
-        pd.util.testing.assert_series_equal(history_series, expected_series)
-
-
-class TestHistoryContainer(TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        cls.env = TradingEnvironment.instance()
-
-    def bar_data_dt(self, bar_data, require_unique=True):
-        """
-        Get a dt to associate with the given BarData object.
-
-        If require_unique == True, throw an error if multiple unique dt's are
-        encountered.  Otherwise, return the earliest dt encountered.
-        """
-        dts = {sid_data['dt'] for sid_data in bar_data.values()}
-        if require_unique and len(dts) > 1:
-            self.fail("Multiple unique dts ({0}) in {1}".format(dts, bar_data))
-
-        return sorted(dts)[0]
-
-    @parameterized.expand(
-        [(name,
-          case['specs'],
-          case['sids'],
-          case['dt'],
-          case['updates'],
-          case['expected'])
-         for name, case in HISTORY_CONTAINER_TEST_CASES.items()]
-    )
-    def test_history_container(self,
-                               name,
-                               specs,
-                               sids,
-                               dt,
-                               updates,
-                               expected):
-
-        for spec in specs:
-            # Sanity check on test input.
-            self.assertEqual(len(expected[spec.key_str]), len(updates))
-
-        container = HistoryContainer(
-            {spec.key_str: spec for spec in specs}, sids, dt, 'minute',
-        )
-
-        for update_count, update in enumerate(updates):
-
-            bar_dt = self.bar_data_dt(update)
-            container.update(update, bar_dt)
-
-            for spec in specs:
-                pd.util.testing.assert_frame_equal(
-                    container.get_history(spec, bar_dt),
-                    expected[spec.key_str][update_count],
-                    check_dtype=False,
-                    check_column_type=True,
-                    check_index_type=True,
-                    check_frame_type=True,
-                )
-
-    def test_multiple_specs_on_same_bar(self):
-        """
-        Test that a ffill and non ffill spec both get
-        the correct results when called on the same tick
-        """
-        spec = history.HistorySpec(
-            bar_count=3,
-            frequency='1m',
-            field='price',
-            ffill=True,
-            data_frequency='minute'
-        )
-        no_fill_spec = history.HistorySpec(
-            bar_count=3,
-            frequency='1m',
-            field='price',
-            ffill=False,
-            data_frequency='minute'
-        )
-
-        specs = {spec.key_str: spec, no_fill_spec.key_str: no_fill_spec}
-        initial_sids = [1, ]
-        initial_dt = pd.Timestamp(
-            '2013-06-28 9:31AM', tz='US/Eastern').tz_convert('UTC')
-
-        container = HistoryContainer(
-            specs, initial_sids, initial_dt, 'minute'
-        )
-
-        bar_data = BarData()
-        container.update(bar_data, initial_dt)
-        # Add data on bar two of first day.
-        second_bar_dt = pd.Timestamp(
-            '2013-06-28 9:32AM', tz='US/Eastern').tz_convert('UTC')
-        bar_data[1] = {
-            'price': 10,
-            'dt': second_bar_dt
-        }
-        container.update(bar_data, second_bar_dt)
-
-        third_bar_dt = pd.Timestamp(
-            '2013-06-28 9:33AM', tz='US/Eastern').tz_convert('UTC')
-
-        del bar_data[1]
-
-        # add nan for 3rd bar
-        container.update(bar_data, third_bar_dt)
-        prices = container.get_history(spec, third_bar_dt)
-        no_fill_prices = container.get_history(no_fill_spec, third_bar_dt)
-        self.assertEqual(prices.values[-1], 10)
-        self.assertTrue(np.isnan(no_fill_prices.values[-1]),
-                        "Last price should be np.nan")
-
-    def test_container_nans_and_daily_roll(self):
-
-        spec = history.HistorySpec(
-            bar_count=3,
-            frequency='1d',
-            field='price',
-            ffill=True,
-            data_frequency='minute'
-        )
-        specs = {spec.key_str: spec}
-        initial_sids = [1, ]
-        initial_dt = pd.Timestamp(
-            '2013-06-28 9:31AM', tz='US/Eastern').tz_convert('UTC')
-
-        container = HistoryContainer(
-            specs, initial_sids, initial_dt, 'minute'
-        )
-
-        bar_data = BarData()
-        container.update(bar_data, initial_dt)
-        # Since there was no backfill because of no db.
-        # And no first bar of data, so all values should be nans.
-        prices = container.get_history(spec, initial_dt)
-        nan_values = np.isnan(prices[1])
-        self.assertTrue(all(nan_values), nan_values)
-
-        # Add data on bar two of first day.
-        second_bar_dt = pd.Timestamp(
-            '2013-06-28 9:32AM', tz='US/Eastern').tz_convert('UTC')
-
-        bar_data[1] = {
-            'price': 10,
-            'dt': second_bar_dt
-        }
-        container.update(bar_data, second_bar_dt)
-
-        prices = container.get_history(spec, second_bar_dt)
-        # Prices should be
-        #                             1
-        # 2013-06-26 20:00:00+00:00 NaN
-        # 2013-06-27 20:00:00+00:00 NaN
-        # 2013-06-28 13:32:00+00:00  10
-
-        self.assertTrue(np.isnan(prices[1].ix[0]))
-        self.assertTrue(np.isnan(prices[1].ix[1]))
-        self.assertEqual(prices[1].ix[2], 10)
-
-        third_bar_dt = pd.Timestamp(
-            '2013-06-28 9:33AM', tz='US/Eastern').tz_convert('UTC')
-
-        del bar_data[1]
-
-        container.update(bar_data, third_bar_dt)
-
-        prices = container.get_history(spec, third_bar_dt)
-        # The one should be forward filled
-
-        # Prices should be
-        #                             1
-        # 2013-06-26 20:00:00+00:00 NaN
-        # 2013-06-27 20:00:00+00:00 NaN
-        # 2013-06-28 13:33:00+00:00  10
-
-        self.assertEquals(prices[1][third_bar_dt], 10)
-
-        # Note that we did not fill in data at the close.
-        # There was a bug where a nan was being introduced because of the
-        # last value of 'raw' data was used, instead of a ffilled close price.
-
-        day_two_first_bar_dt = pd.Timestamp(
-            '2013-07-01 9:31AM', tz='US/Eastern').tz_convert('UTC')
-
-        bar_data[1] = {
-            'price': 20,
-            'dt': day_two_first_bar_dt
-        }
-
-        container.update(bar_data, day_two_first_bar_dt)
-
-        prices = container.get_history(spec, day_two_first_bar_dt)
-
-        # Prices Should Be
-
-        #                              1
-        # 2013-06-27 20:00:00+00:00  nan
-        # 2013-06-28 20:00:00+00:00   10
-        # 2013-07-01 13:31:00+00:00   20
-
-        self.assertTrue(np.isnan(prices[1].ix[0]))
-        self.assertEqual(prices[1].ix[1], 10)
-        self.assertEqual(prices[1].ix[2], 20)
-
-        # Clear out the bar data
-
-        del bar_data[1]
-
-        day_three_first_bar_dt = pd.Timestamp(
-            '2013-07-02 9:31AM', tz='US/Eastern').tz_convert('UTC')
-
-        container.update(bar_data, day_three_first_bar_dt)
-
-        prices = container.get_history(spec, day_three_first_bar_dt)
-
-        #                             1
-        # 2013-06-28 20:00:00+00:00  10
-        # 2013-07-01 20:00:00+00:00  20
-        # 2013-07-02 13:31:00+00:00  20
-
-        self.assertTrue(prices[1].ix[0], 10)
-        self.assertTrue(prices[1].ix[1], 20)
-        self.assertTrue(prices[1].ix[2], 20)
-
-        day_four_first_bar_dt = pd.Timestamp(
-            '2013-07-03 9:31AM', tz='US/Eastern').tz_convert('UTC')
-
-        container.update(bar_data, day_four_first_bar_dt)
-
-        prices = container.get_history(spec, day_four_first_bar_dt)
-
-        #                             1
-        # 2013-07-01 20:00:00+00:00  20
-        # 2013-07-02 20:00:00+00:00  20
-        # 2013-07-03 13:31:00+00:00  20
-
-        self.assertEqual(prices[1].ix[0], 20)
-        self.assertEqual(prices[1].ix[1], 20)
-        self.assertEqual(prices[1].ix[2], 20)
-
-
-class TestHistoryAlgo(TestCase):
-    def setUp(self):
-        np.random.seed(123)
-
-    def test_history_daily(self):
-        bar_count = 3
-        algo_text = """
-from zipline.api import history, add_history
-
-def initialize(context):
-    add_history(bar_count={bar_count}, frequency='1d', field='price')
-    context.history_trace = []
-
-def handle_data(context, data):
-    prices = history(bar_count={bar_count}, frequency='1d', field='price')
-    context.history_trace.append(prices)
-""".format(bar_count=bar_count).strip()
-
-        #      March 2006
-        # Su Mo Tu We Th Fr Sa
-        #          1  2  3  4
-        #  5  6  7  8  9 10 11
-        # 12 13 14 15 16 17 18
-        # 19 20 21 22 23 24 25
-        # 26 27 28 29 30 31
-
-        start = pd.Timestamp('2006-03-20', tz='UTC')
-        end = pd.Timestamp('2006-03-30', tz='UTC')
-
-        sim_params = factory.create_simulation_parameters(
-            start=start, end=end, data_frequency='daily')
-
-        _, df = factory.create_test_df_source(sim_params)
-        df = df.astype(np.float64)
-        source = DataFrameSource(df)
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='daily',
-            sim_params=sim_params
-        )
-
-        output = test_algo.run(source)
-        self.assertIsNotNone(output)
-
-        history_trace = test_algo.history_trace
-
-        for i, received in enumerate(history_trace[bar_count - 1:]):
-            expected = df.iloc[i:i + bar_count]
-            assert_frame_equal(expected, received)
-
-    def test_history_daily_data_1m_window(self):
-        algo_text = """
-from zipline.api import history, add_history
-
-def initialize(context):
-    add_history(bar_count=1, frequency='1m', field='price')
-
-def handle_data(context, data):
-    prices = history(bar_count=3, frequency='1d', field='price')
-""".strip()
-
-        start = pd.Timestamp('2006-03-20', tz='UTC')
-        end = pd.Timestamp('2006-03-30', tz='UTC')
-
-        sim_params = factory.create_simulation_parameters(
-            start=start, end=end)
-
-        with self.assertRaises(IncompatibleHistoryFrequency):
-            algo = TradingAlgorithm(
-                script=algo_text,
-                data_frequency='daily',
-                sim_params=sim_params
+    def make_equity_minute_bar_data(cls):
+        equities_cal = cls.trading_calendars[Equity]
+
+        data = {}
+        sids = {2, 5, cls.SHORT_ASSET_SID, cls.HALF_DAY_TEST_ASSET_SID}
+        for sid in sids:
+            asset = cls.asset_finder.retrieve_asset(sid)
+            data[sid] = create_minute_df_for_asset(
+                equities_cal,
+                asset.start_date,
+                asset.end_date,
+                start_val=2,
             )
-            source = RandomWalkSource(start=start, end=end)
-            algo.run(source)
 
-    def test_basic_history(self):
-        algo_text = """
-from zipline.api import history, add_history
+        data[1] = create_minute_df_for_asset(
+            equities_cal,
+            pd.Timestamp('2014-01-03', tz='utc'),
+            pd.Timestamp('2016-01-29', tz='utc'),
+            start_val=2,
+        )
 
-def initialize(context):
-    add_history(bar_count=2, frequency='1d', field='price')
+        asset2 = cls.asset_finder.retrieve_asset(2)
+        data[asset2.sid] = create_minute_df_for_asset(
+            equities_cal,
+            asset2.start_date,
+            equities_cal.previous_session_label(asset2.end_date),
+            start_val=2,
+            minute_blacklist=[
+                pd.Timestamp('2015-01-08 14:31', tz='UTC'),
+                pd.Timestamp('2015-01-08 21:00', tz='UTC'),
+            ],
+        )
 
-def handle_data(context, data):
-    prices = history(bar_count=2, frequency='1d', field='price')
-    prices['prices_times_two'] = prices[1] * 2
-    context.last_prices = prices
-""".strip()
+        # Start values are crafted so that the thousands place are equal when
+        # adjustments are applied correctly.
+        # The splits and mergers are defined as 4:1 then 2:1 ratios, so the
+        # prices approximate that adjustment by quartering and then halving
+        # the thousands place.
+        data[cls.MERGER_ASSET_SID] = data[cls.SPLIT_ASSET_SID] = pd.concat((
+            create_minute_df_for_asset(
+                equities_cal,
+                pd.Timestamp('2015-01-05', tz='UTC'),
+                pd.Timestamp('2015-01-05', tz='UTC'),
+                start_val=8000),
+            create_minute_df_for_asset(
+                equities_cal,
+                pd.Timestamp('2015-01-06', tz='UTC'),
+                pd.Timestamp('2015-01-06', tz='UTC'),
+                start_val=2000),
+            create_minute_df_for_asset(
+                equities_cal,
+                pd.Timestamp('2015-01-07', tz='UTC'),
+                pd.Timestamp('2015-01-07', tz='UTC'),
+                start_val=1000),
+            create_minute_df_for_asset(
+                equities_cal,
+                pd.Timestamp('2015-01-08', tz='UTC'),
+                pd.Timestamp('2015-01-08', tz='UTC'),
+                start_val=1000)
+        ))
+        asset3 = cls.asset_finder.retrieve_asset(3)
+        data[3] = create_minute_df_for_asset(
+            equities_cal,
+            asset3.start_date,
+            asset3.end_date,
+            start_val=2,
+            interval=10,
+        )
+        return iteritems(data)
 
-        #      March 2006
-        # Su Mo Tu We Th Fr Sa
-        #          1  2  3  4
-        #  5  6  7  8  9 10 11
-        # 12 13 14 15 16 17 18
-        # 19 20 21 22 23 24 25
-        # 26 27 28 29 30 31
-        start = pd.Timestamp('2006-03-20', tz='UTC')
-        end = pd.Timestamp('2006-03-21', tz='UTC')
+    def test_history_in_initialize(self):
+        algo_text = dedent(
+            """\
+            from zipline.api import history
 
-        sim_params = factory.create_simulation_parameters(
-            start=start, end=end)
+            def initialize(context):
+                history([1], 10, '1d', 'price')
+
+            def handle_data(context, data):
+                pass
+            """
+        )
+
+        start = pd.Timestamp('2014-04-05', tz='UTC')
+        end = pd.Timestamp('2014-04-10', tz='UTC')
+
+        sim_params = SimulationParameters(
+            start_session=start,
+            end_session=end,
+            capital_base=float('1.0e5'),
+            data_frequency='minute',
+            emission_rate='daily',
+            trading_calendar=self.trading_calendar,
+        )
 
         test_algo = TradingAlgorithm(
             script=algo_text,
             data_frequency='minute',
             sim_params=sim_params,
-            identifiers=[0]
+            env=self.env,
         )
 
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-        self.assertIsNotNone(output)
-
-        last_prices = test_algo.last_prices[0]
-        oldest_dt = pd.Timestamp(
-            '2006-03-20 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-        newest_dt = pd.Timestamp(
-            '2006-03-21 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-
-        self.assertEquals(oldest_dt, last_prices.index[0])
-        self.assertEquals(newest_dt, last_prices.index[-1])
-
-        # Random, depends on seed
-        self.assertEquals(139.36946942498648, last_prices[oldest_dt])
-        self.assertEquals(180.15661995395106, last_prices[newest_dt])
-
-    def test_basic_history_one_day(self):
-        algo_text = """
-from zipline.api import history, add_history
-
-def initialize(context):
-    add_history(bar_count=1, frequency='1d', field='price')
-
-def handle_data(context, data):
-    prices = history(bar_count=1, frequency='1d', field='price')
-    context.last_prices = prices
-""".strip()
-
-        #      March 2006
-        # Su Mo Tu We Th Fr Sa
-        #          1  2  3  4
-        #  5  6  7  8  9 10 11
-        # 12 13 14 15 16 17 18
-        # 19 20 21 22 23 24 25
-        # 26 27 28 29 30 31
-
-        start = pd.Timestamp('2006-03-20', tz='UTC')
-        end = pd.Timestamp('2006-03-21', tz='UTC')
-
-        sim_params = factory.create_simulation_parameters(
-            start=start, end=end)
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        self.assertIsNotNone(output)
-
-        last_prices = test_algo.last_prices[0]
-        # oldest and newest should be the same if there is only 1 bar
-        oldest_dt = pd.Timestamp(
-            '2006-03-21 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-        newest_dt = pd.Timestamp(
-            '2006-03-21 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-
-        self.assertEquals(oldest_dt, last_prices.index[0])
-        self.assertEquals(newest_dt, last_prices.index[-1])
-
-        # Random, depends on seed
-        self.assertEquals(180.15661995395106, last_prices[oldest_dt])
-        self.assertEquals(180.15661995395106, last_prices[newest_dt])
-
-    def test_basic_history_positional_args(self):
-        """
-        Ensure that positional args work.
-        """
-        algo_text = """
-from zipline.api import history, add_history
-
-def initialize(context):
-    add_history(2, '1d', 'price')
-
-def handle_data(context, data):
-
-    prices = history(2, '1d', 'price')
-    context.last_prices = prices
-""".strip()
-
-        #      March 2006
-        # Su Mo Tu We Th Fr Sa
-        #          1  2  3  4
-        #  5  6  7  8  9 10 11
-        # 12 13 14 15 16 17 18
-        # 19 20 21 22 23 24 25
-        # 26 27 28 29 30 31
-
-        start = pd.Timestamp('2006-03-20', tz='UTC')
-        end = pd.Timestamp('2006-03-21', tz='UTC')
-
-        sim_params = factory.create_simulation_parameters(
-            start=start, end=end)
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-        self.assertIsNotNone(output)
-
-        last_prices = test_algo.last_prices[0]
-        oldest_dt = pd.Timestamp(
-            '2006-03-20 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-        newest_dt = pd.Timestamp(
-            '2006-03-21 4:00 PM', tz='US/Eastern').tz_convert('UTC')
-
-        self.assertEquals(oldest_dt, last_prices.index[0])
-        self.assertEquals(newest_dt, last_prices.index[-1])
-
-        self.assertEquals(139.36946942498648, last_prices[oldest_dt])
-        self.assertEquals(180.15661995395106, last_prices[newest_dt])
-
-    def test_history_with_volume(self):
-        algo_text = """
-from zipline.api import history, add_history, record
-
-def initialize(context):
-    add_history(3, '1d', 'volume')
-
-def handle_data(context, data):
-    volume = history(3, '1d', 'volume')
-
-    record(current_volume=volume[0].ix[-1])
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        start = pd.Timestamp('2007-04-10', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='minute'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        np.testing.assert_equal(output.ix[0, 'current_volume'],
-                                212218404.0)
-
-    def test_history_with_high(self):
-        algo_text = """
-from zipline.api import history, add_history, record
-
-def initialize(context):
-    add_history(3, '1d', 'high')
-
-def handle_data(context, data):
-    highs = history(3, '1d', 'high')
-
-    record(current_high=highs[0].ix[-1])
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        start = pd.Timestamp('2007-04-10', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='minute'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        np.testing.assert_equal(output.ix[0, 'current_high'],
-                                139.5370641791925)
-
-    def test_history_with_low(self):
-        algo_text = """
-from zipline.api import history, add_history, record
-
-def initialize(context):
-    add_history(3, '1d', 'low')
-
-def handle_data(context, data):
-    lows = history(3, '1d', 'low')
-
-    record(current_low=lows[0].ix[-1])
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        start = pd.Timestamp('2007-04-10', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='minute'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        np.testing.assert_equal(output.ix[0, 'current_low'],
-                                99.891436939669944)
-
-    def test_history_with_open(self):
-        algo_text = """
-from zipline.api import history, add_history, record
-
-def initialize(context):
-    add_history(3, '1d', 'open_price')
-
-def handle_data(context, data):
-    opens = history(3, '1d', 'open_price')
-
-    record(current_open=opens[0].ix[-1])
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        start = pd.Timestamp('2007-04-10', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='minute'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        np.testing.assert_equal(output.ix[0, 'current_open'],
-                                99.991436939669939)
-
-    def test_history_passed_to_func(self):
-        """
-        Had an issue where MagicMock was causing errors during validation
-        with rolling mean.
-        """
-        algo_text = """
-from zipline.api import history, add_history
-import pandas as pd
-
-def initialize(context):
-    add_history(2, '1d', 'price')
-
-def handle_data(context, data):
-    prices = history(2, '1d', 'price')
-
-    pd.rolling_mean(prices, 2)
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        start = pd.Timestamp('2007-04-10', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='minute'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-
-        # At this point, just ensure that there is no crash.
-        self.assertIsNotNone(output)
-
-    def test_history_passed_to_talib(self):
-        """
-        Had an issue where MagicMock was causing errors during validation
-        with talib.
-
-        We don't officially support a talib integration, yet.
-        But using talib directly should work.
-        """
-        algo_text = """
-import talib
-import numpy as np
-
-from zipline.api import history, add_history, record
-
-def initialize(context):
-    add_history(2, '1d', 'price')
-
-def handle_data(context, data):
-    prices = history(2, '1d', 'price')
-
-    ma_result = talib.MA(np.asarray(prices[0]), timeperiod=2)
-    record(ma=ma_result[-1])
-""".strip()
-
-        #      April 2007
-        # Su Mo Tu We Th Fr Sa
-        #  1  2  3  4  5  6  7
-        #  8  9 10 11 12 13 14
-        # 15 16 17 18 19 20 21
-        # 22 23 24 25 26 27 28
-        # 29 30
-
-        # Eddie: this was set to 04-10 but I don't see how that makes
-        # sense as it does not generate enough data to get at -2 index
-        # below.
-        start = pd.Timestamp('2007-04-05', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='daily'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start,
-                                  end=end)
-        output = test_algo.run(source)
-        # At this point, just ensure that there is no crash.
-        self.assertIsNotNone(output)
-
-        recorded_ma = output.ix[-2, 'ma']
-
-        self.assertFalse(pd.isnull(recorded_ma))
-        # Depends on seed
-        np.testing.assert_almost_equal(recorded_ma,
-                                       159.76304468946876)
-
-    @parameterized.expand([
-        ('daily',),
-        ('minute',),
-    ])
-    def test_history_container_constructed_at_runtime(self, data_freq):
-        algo_text = dedent(
-            """\
-            from zipline.api import history
-            def handle_data(context, data):
-                context.prices = history(2, '1d', 'price')
-            """
-        )
-        start = pd.Timestamp('2007-04-05', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency=data_freq,
-            emission_rate=data_freq
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency=data_freq,
-            sim_params=sim_params
-        )
-
-        source = RandomWalkSource(start=start, end=end, freq=data_freq)
-
-        self.assertIsNone(test_algo.history_container)
-        test_algo.run(source)
-        self.assertIsNotNone(
-            test_algo.history_container,
-            msg='HistoryContainer was not constructed at runtime',
-        )
-
-        container = test_algo.history_container
-        self.assertEqual(
-            len(container.digest_panels),
-            1,
-            msg='The HistoryContainer created too many digest panels',
-        )
-
-        freq, digest = list(container.digest_panels.items())[0]
-        self.assertEqual(
-            freq.unit_str,
-            'd',
-        )
-
-        self.assertEqual(
-            digest.window_length,
-            1,
-            msg='The digest panel is not large enough to service the given'
-            ' HistorySpec',
-        )
-
-    @parameterized.expand([
-        (1,),
-        (2,),
-    ])
-    def test_history_grow_length_inter_bar(self, incr):
-        """
-        Tests growing the length of a digest panel with different date_buf
-        deltas once per bar.
-        """
-        algo_text = dedent(
-            """\
-            from zipline.api import history
-
-
-            def initialize(context):
-                context.bar_count = 1
-
-
-            def handle_data(context, data):
-                prices = history(context.bar_count, '1d', 'price')
-                context.test_case.assertEqual(len(prices), context.bar_count)
-                context.bar_count += {incr}
-            """
-        ).format(incr=incr)
-        start = pd.Timestamp('2007-04-05', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='daily'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-        test_algo.test_case = self
-
-        source = RandomWalkSource(start=start, end=end)
-
-        self.assertIsNone(test_algo.history_container)
-        test_algo.run(source)
-
-    @parameterized.expand([
-        (1,),
-        (2,),
-    ])
-    def test_history_grow_length_intra_bar(self, incr):
-        """
-        Tests growing the length of a digest panel with different date_buf
-        deltas in a single bar.
-        """
-        algo_text = dedent(
-            """\
-            from zipline.api import history
-
-
-            def initialize(context):
-                context.bar_count = 1
-
-
-            def handle_data(context, data):
-                prices = history(context.bar_count, '1d', 'price')
-                context.test_case.assertEqual(len(prices), context.bar_count)
-                context.bar_count += {incr}
-                prices = history(context.bar_count, '1d', 'price')
-                context.test_case.assertEqual(len(prices), context.bar_count)
-            """
-        ).format(incr=incr)
-        start = pd.Timestamp('2007-04-05', tz='UTC')
-        end = pd.Timestamp('2007-04-10', tz='UTC')
-
-        sim_params = SimulationParameters(
-            period_start=start,
-            period_end=end,
-            capital_base=float("1.0e5"),
-            data_frequency='minute',
-            emission_rate='daily'
-        )
-
-        test_algo = TradingAlgorithm(
-            script=algo_text,
-            data_frequency='minute',
-            sim_params=sim_params
-        )
-        test_algo.test_case = self
-
-        source = RandomWalkSource(start=start, end=end)
-
-        self.assertIsNone(test_algo.history_container)
-        test_algo.run(source)
-
-
-class TestHistoryContainerResize(TestCase):
-    @parameterized.expand(
-        (freq, field, data_frequency, construct_digest)
-        for freq in ('1m', '1d')
-        for field in HistoryContainer.VALID_FIELDS
-        for data_frequency in ('minute', 'daily')
-        for construct_digest in (True, False)
-        if not (freq == '1m' and data_frequency == 'daily')
-    )
-    def test_history_grow_length(self,
-                                 freq,
-                                 field,
-                                 data_frequency,
-                                 construct_digest):
-        bar_count = 2 if construct_digest else 1
-        spec = history.HistorySpec(
-            bar_count=bar_count,
-            frequency=freq,
-            field=field,
-            ffill=True,
-            data_frequency=data_frequency,
-        )
-        specs = {spec.key_str: spec}
-        initial_sids = [1]
-        initial_dt = pd.Timestamp(
-            '2013-06-28 13:31'
-            if data_frequency == 'minute'
-            else '2013-06-28 12:00AM',
-            tz='UTC',
-        )
-
-        container = HistoryContainer(
-            specs, initial_sids, initial_dt, data_frequency,
-        )
-
-        if construct_digest:
-            self.assertEqual(
-                container.digest_panels[spec.frequency].window_length, 1,
+        with self.assertRaises(HistoryInInitialize):
+            test_algo.initialize()
+
+    def test_daily_splits_and_mergers(self):
+        # self.SPLIT_ASSET and self.MERGER_ASSET had splits/mergers
+        # on 1/6 and 1/7
+
+        jan5 = pd.Timestamp('2015-01-05', tz='UTC')
+
+        for asset in [self.SPLIT_ASSET, self.MERGER_ASSET]:
+            # before any of the adjustments, 1/4 and 1/5
+            window1 = self.data_portal.get_history_window(
+                [asset],
+                self.trading_calendar.open_and_close_for_session(jan5)[1],
+                2,
+                '1d',
+                'close',
+                'minute',
+            )[asset]
+
+            np.testing.assert_array_equal(np.array([np.nan, 8389]), window1)
+
+            # straddling the first event
+            window2 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-06 14:35', tz='UTC'),
+                2,
+                '1d',
+                'close',
+                'minute',
+            )[asset]
+
+            # Value from 1/5 should be quartered
+            np.testing.assert_array_equal(
+                [2097.25,
+                 # Split occurs. The value of the thousands place should
+                 # match.
+                 2004],
+                window2
             )
 
-        bar_data = BarData()
-        container.update(bar_data, initial_dt)
+            # straddling both events!
+            window3 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-07 14:35', tz='UTC'),
+                3,
+                '1d',
+                'close',
+                'minute',
+            )[asset]
 
-        to_add = (
-            history.HistorySpec(
-                bar_count=bar_count + 1,
-                frequency=freq,
-                field=field,
-                ffill=True,
-                data_frequency=data_frequency,
-            ),
-            history.HistorySpec(
-                bar_count=bar_count + 2,
-                frequency=freq,
-                field=field,
-                ffill=True,
-                data_frequency=data_frequency,
-            ),
-        )
-
-        for spec in to_add:
-            container.ensure_spec(spec, initial_dt, bar_data)
-
-            self.assertEqual(
-                container.digest_panels[spec.frequency].window_length,
-                spec.bar_count - 1,
+            np.testing.assert_array_equal(
+                [1048.625, 1194.50, 1004.0],
+                window3
             )
 
-            self.assert_history(container, spec, initial_dt)
+            # after last event
+            window4 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-08 14:40', tz='UTC'),
+                2,
+                '1d',
+                'close',
+                'minute',
+            )[asset]
 
-    @parameterized.expand(
-        (bar_count, freq, pair, data_frequency)
-        for bar_count in (1, 2)
-        for freq in ('1m', '1d')
-        for pair in product(HistoryContainer.VALID_FIELDS, repeat=2)
-        for data_frequency in ('minute', 'daily')
-        if not (freq == '1m' and data_frequency == 'daily')
-    )
-    def test_history_add_field(self, bar_count, freq, pair, data_frequency):
-        first, second = pair
-        spec = history.HistorySpec(
-            bar_count=bar_count,
-            frequency=freq,
-            field=first,
-            ffill=True,
-            data_frequency=data_frequency,
-        )
-        specs = {spec.key_str: spec}
-        initial_sids = [1]
-        initial_dt = pd.Timestamp(
-            '2013-06-28 13:31'
-            if data_frequency == 'minute'
-            else '2013-06-28 12:00AM',
-            tz='UTC',
+            # should not be adjusted
+            np.testing.assert_array_equal([1389, 1009], window4)
+
+    def test_daily_dividends(self):
+        # self.DIVIDEND_ASSET had dividends on 1/6 and 1/7
+
+        jan5 = pd.Timestamp('2015-01-05', tz='UTC')
+        asset = self.DIVIDEND_ASSET
+
+        # before any of the dividends
+        window1 = self.data_portal.get_history_window(
+            [asset],
+            self.trading_calendar.open_and_close_for_session(jan5)[1],
+            2,
+            '1d',
+            'close',
+            'minute',
+        )[asset]
+
+        np.testing.assert_array_equal(np.array([nan, 391]), window1)
+
+        # straddling the first event
+        window2 = self.data_portal.get_history_window(
+            [asset],
+            pd.Timestamp('2015-01-06 14:35', tz='UTC'),
+            2,
+            '1d',
+            'close',
+            'minute',
+        )[asset]
+
+        np.testing.assert_array_equal(
+            [383.18,  # 391 (last close) * 0.98 (first div)
+             # Dividend occurs prior.
+             396],
+            window2
         )
 
-        container = HistoryContainer(
-            specs, initial_sids, initial_dt, data_frequency,
+        # straddling both events!
+        window3 = self.data_portal.get_history_window(
+            [asset],
+            pd.Timestamp('2015-01-07 14:35', tz='UTC'),
+            3,
+            '1d',
+            'close',
+            'minute',
+        )[asset]
+
+        np.testing.assert_array_equal(
+            [367.853,  # 391 (last close) * 0.98 * 0.96 (both)
+             749.76,  # 781 (last_close) * 0.96 (second div)
+             786],  # no adjustment
+            window3
         )
 
-        if bar_count > 1:
-            self.assertEqual(
-                container.digest_panels[spec.frequency].window_length, 1,
+        # after last event
+        window4 = self.data_portal.get_history_window(
+            [asset],
+            pd.Timestamp('2015-01-08 14:40', tz='UTC'),
+            2,
+            '1d',
+            'close',
+            'minute',
+        )[asset]
+
+        # should not be adjusted, should be 787 to 791
+        np.testing.assert_array_equal([1171, 1181], window4)
+
+    def test_minute_before_assets_trading(self):
+        # since asset2 and asset3 both started trading on 1/5/2015, let's do
+        # some history windows that are completely before that
+        minutes = self.trading_calendar.minutes_for_session(
+            self.trading_calendar.previous_session_label(pd.Timestamp(
+                '2015-01-05', tz='UTC'
+            ))
+        )[0:60]
+
+        for idx, minute in enumerate(minutes):
+            bar_data = self.create_bardata(
+                lambda: minute,
+            )
+            check_internal_consistency(
+                bar_data, [self.ASSET2, self.ASSET3], ALL_FIELDS, 10, '1m'
             )
 
-        bar_data = BarData()
-        container.update(bar_data, initial_dt)
+            for field in ALL_FIELDS:
+                # OHLCP should be NaN
+                # Volume should be 0
+                asset2_series = bar_data.history(self.ASSET2, field, 10, '1m')
+                asset3_series = bar_data.history(self.ASSET3, field, 10, '1m')
 
-        new_spec = history.HistorySpec(
+                if field == 'volume':
+                    np.testing.assert_array_equal(np.zeros(10), asset2_series)
+                    np.testing.assert_array_equal(np.zeros(10), asset3_series)
+                else:
+                    np.testing.assert_array_equal(
+                        np.full(10, np.nan),
+                        asset2_series
+                    )
+
+                    np.testing.assert_array_equal(
+                        np.full(10, np.nan),
+                        asset3_series
+                    )
+
+    @parameterized.expand([
+        ('open_sid_2', 'open', 2),
+        ('high_sid_2', 'high', 2),
+        ('low_sid_2', 'low', 2),
+        ('close_sid_2', 'close', 2),
+        ('volume_sid_2', 'volume', 2),
+        ('open_sid_3', 'open', 3),
+        ('high_sid_3', 'high', 3),
+        ('low_sid_3', 'low', 3),
+        ('close_sid_3', 'close', 3),
+        ('volume_sid_3', 'volume', 3),
+
+    ])
+    def test_minute_regular(self, name, field, sid):
+        # asset2 and asset3 both started on 1/5/2015, but asset3 trades every
+        # 10 minutes
+        asset = self.env.asset_finder.retrieve_asset(sid)
+
+        # Check the first hour of equities trading.
+        minutes = self.trading_calendars[Equity].minutes_for_session(
+            pd.Timestamp('2015-01-05', tz='UTC')
+        )[0:60]
+
+        for idx, minute in enumerate(minutes):
+            self.verify_regular_dt(idx, minute, 'minute',
+                                   assets=[asset],
+                                   fields=[field])
+
+    def test_minute_sunday_midnight(self):
+        # Most trading calendars aren't open at midnight on Sunday.
+        sunday_midnight = pd.Timestamp('2015-01-09', tz='UTC')
+
+        # Find the closest prior minute when the trading calendar was
+        # open (note that if the calendar is open at `sunday_midnight`,
+        # this will be `sunday_midnight`).
+        trading_minutes = self.trading_calendar.all_minutes
+        last_minute = trading_minutes[trading_minutes <= sunday_midnight][-1]
+
+        sunday_midnight_bar_data = self.create_bardata(lambda: sunday_midnight)
+        last_minute_bar_data = self.create_bardata(lambda: last_minute)
+
+        # Ensure that we get the same results at midnight on Sunday as
+        # the last open minute.
+        with handle_non_market_minutes(sunday_midnight_bar_data):
+            for field in ALL_FIELDS:
+                np.testing.assert_array_equal(
+                    sunday_midnight_bar_data.history(
+                        self.ASSET2,
+                        field,
+                        30,
+                        '1m',
+                    ),
+                    last_minute_bar_data.history(self.ASSET2, field, 30, '1m')
+                )
+
+    def test_minute_after_asset_stopped(self):
+        # SHORT_ASSET's last day was 2015-01-06
+        # get some history windows that straddle the end
+        minutes = self.trading_calendars[Equity].minutes_for_session(
+            pd.Timestamp('2015-01-07', tz='UTC')
+        )[0:60]
+
+        for idx, minute in enumerate(minutes):
+            bar_data = self.create_bardata(
+                lambda: minute
+            )
+            check_internal_consistency(
+                bar_data, self.SHORT_ASSET, ALL_FIELDS, 30, '1m'
+            )
+
+        # Reset data portal because it has advanced past next test date.
+        data_portal = self.make_data_portal()
+
+        #                             close  high  low  open  price  volume
+        # 2015-01-06 20:47:00+00:00    768   770  767   769    768   76800
+        # 2015-01-06 20:48:00+00:00    769   771  768   770    769   76900
+        # 2015-01-06 20:49:00+00:00    770   772  769   771    770   77000
+        # 2015-01-06 20:50:00+00:00    771   773  770   772    771   77100
+        # 2015-01-06 20:51:00+00:00    772   774  771   773    772   77200
+        # 2015-01-06 20:52:00+00:00    773   775  772   774    773   77300
+        # 2015-01-06 20:53:00+00:00    774   776  773   775    774   77400
+        # 2015-01-06 20:54:00+00:00    775   777  774   776    775   77500
+        # 2015-01-06 20:55:00+00:00    776   778  775   777    776   77600
+        # 2015-01-06 20:56:00+00:00    777   779  776   778    777   77700
+        # 2015-01-06 20:57:00+00:00    778   780  777   779    778   77800
+        # 2015-01-06 20:58:00+00:00    779   781  778   780    779   77900
+        # 2015-01-06 20:59:00+00:00    780   782  779   781    780   78000
+        # 2015-01-06 21:00:00+00:00    781   783  780   782    781   78100
+        # 2015-01-07 14:31:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:32:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:33:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:34:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:35:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:36:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:37:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:38:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:39:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:40:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:41:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:42:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:43:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:44:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:45:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+        # 2015-01-07 14:46:00+00:00    NaN   NaN  NaN   NaN    NaN       0
+
+        # choose a window that contains the last minute of the asset
+        window_start = pd.Timestamp('2015-01-06 20:47', tz='UTC')
+        window_end = pd.Timestamp('2015-01-07 14:46', tz='UTC')
+
+        bar_data = BarData(
+            data_portal=data_portal,
+            simulation_dt_func=lambda: minutes[15],
+            data_frequency='minute',
+            restrictions=NoRestrictions(),
+            trading_calendar=self.trading_calendar,
+        )
+
+        bar_count = len(
+            self.trading_calendar.minutes_in_range(window_start, window_end)
+        )
+        window = bar_data.history(
+            self.SHORT_ASSET,
+            ALL_FIELDS,
             bar_count,
-            frequency=freq,
-            field=second,
-            ffill=True,
-            data_frequency=data_frequency,
+            '1m',
         )
 
-        container.ensure_spec(new_spec, initial_dt, bar_data)
+        # Window should start with 14 values and end with 16 NaNs/0s.
+        for field in ALL_FIELDS:
+            if field == 'volume':
+                np.testing.assert_array_equal(
+                    range(76800, 78101, 100),
+                    window['volume'][0:14]
+                )
+                np.testing.assert_array_equal(
+                    np.zeros(16),
+                    window['volume'][-16:]
+                )
+            else:
+                np.testing.assert_array_equal(
+                    np.array(range(768, 782)) + MINUTE_FIELD_INFO[field],
+                    window[field][0:14]
+                )
+                np.testing.assert_array_equal(
+                    np.full(16, np.nan),
+                    window[field][-16:]
+                )
 
-        if bar_count > 1:
-            digest_panel = container.digest_panels[new_spec.frequency]
-            self.assertEqual(digest_panel.window_length, bar_count - 1)
-            self.assertIn(second, digest_panel.items)
-        else:
-            self.assertNotIn(new_spec.frequency, container.digest_panels)
+        # now do a smaller window that is entirely contained after the asset
+        # ends
+        window = bar_data.history(self.SHORT_ASSET, ALL_FIELDS, 5, '1m')
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        for field in ALL_FIELDS:
+            if field == 'volume':
+                np.testing.assert_array_equal(np.zeros(5), window['volume'])
+            else:
+                np.testing.assert_array_equal(np.full(5, np.nan),
+                                              window[field])
 
-            self.assert_history(container, new_spec, initial_dt)
+    def test_minute_splits_and_mergers(self):
+        # self.SPLIT_ASSET and self.MERGER_ASSET had splits/mergers
+        # on 1/6 and 1/7
 
-    @parameterized.expand(
-        (bar_count, pair, field, data_frequency)
-        for bar_count in (1, 2)
-        for pair in product(('1m', '1d'), repeat=2)
-        for field in HistoryContainer.VALID_FIELDS
-        for data_frequency in ('minute', 'daily')
-        if not ('1m' in pair and data_frequency == 'daily')
-    )
-    def test_history_add_freq(self, bar_count, pair, field, data_frequency):
-        first, second = pair
-        spec = history.HistorySpec(
-            bar_count=bar_count,
-            frequency=first,
-            field=field,
-            ffill=True,
-            data_frequency=data_frequency,
-        )
-        specs = {spec.key_str: spec}
-        initial_sids = [1]
-        initial_dt = pd.Timestamp(
-            '2013-06-28 13:31'
-            if data_frequency == 'minute'
-            else '2013-06-28 12:00AM',
-            tz='UTC',
-        )
+        jan5 = pd.Timestamp('2015-01-05', tz='UTC')
 
-        container = HistoryContainer(
-            specs, initial_sids, initial_dt, data_frequency,
-        )
+        # the assets' close column starts at 2 on the first minute of
+        # 1/5, then goes up one per minute forever
 
-        if bar_count > 1:
-            self.assertEqual(
-                container.digest_panels[spec.frequency].window_length, 1,
+        for asset in [self.SPLIT_ASSET, self.MERGER_ASSET]:
+            # before any of the adjustments, last 10 minutes of jan 5
+            equity_cal = self.trading_calendars[Equity]
+            window1 = self.data_portal.get_history_window(
+                [asset],
+                equity_cal.open_and_close_for_session(jan5)[1],
+                10,
+                '1m',
+                'close',
+                'minute',
+            )[asset]
+
+            np.testing.assert_array_equal(
+                np.array(range(8380, 8390)), window1)
+
+            # straddling the first event - begins with the last 5 equity
+            # minutes on 2015-01-05, ends with the first 5 on
+            # 2015-01-06.
+            window2_start = pd.Timestamp('2015-01-05 20:56', tz='UTC')
+            window2_end = pd.Timestamp('2015-01-06 14:35', tz='UTC')
+            window2_count = len(self.trading_calendar.minutes_in_range(
+                window2_start,
+                window2_end,
+            ))
+            window2 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-06 14:35', tz='UTC'),
+                window2_count,
+                '1m',
+                'close',
+                'minute',
+            )[asset]
+
+            # five minutes from 1/5 should be halved
+            np.testing.assert_array_equal(
+                [2096.25,
+                 2096.5,
+                 2096.75,
+                 2097,
+                 2097.25],
+                window2[:5],
+            )
+            # Split occurs. The value of the thousands place should
+            # match.
+            np.testing.assert_array_equal(
+                [2000,
+                 2001,
+                 2002,
+                 2003,
+                 2004],
+                window2[-5:],
             )
 
-        bar_data = BarData()
-        container.update(bar_data, initial_dt)
+            # straddling both events! on the equities calendar this is 5
+            # minutes of 1/7, 390 of 1/6, and 5 minutes of 1/5.
+            window3_start = pd.Timestamp('2015-01-05 20:56', tz='UTC')
+            window3_end = pd.Timestamp('2015-01-07 14:35', tz='UTC')
+            window3_minutes = self.trading_calendar.minutes_in_range(
+                window3_start,
+                window3_end,
+            )
+            window3_count = len(window3_minutes)
+            window3 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-07 14:35', tz='UTC'),
+                window3_count,
+                '1m',
+                'close',
+                'minute',
+            )[asset]
 
-        new_spec = history.HistorySpec(
-            bar_count,
-            frequency=second,
-            field=field,
-            ffill=True,
-            data_frequency=data_frequency,
+            # first five minutes should be 4385-4390, but eigthed
+            np.testing.assert_array_equal(
+                [1048.125, 1048.25, 1048.375, 1048.5, 1048.625],
+                window3[0:5]
+            )
+
+            # next 390 minutes (the 2015-01-06 session) should be
+            # 2000-2390, but halved
+            middle_day_open_i = window3_minutes.searchsorted(
+                pd.Timestamp('2015-01-06 14:31', tz='UTC')
+            )
+            middle_day_close_i = window3_minutes.searchsorted(
+                pd.Timestamp('2015-01-06 21:00', tz='UTC')
+            )
+            np.testing.assert_array_equal(
+                np.array(range(2000, 2390), dtype='float64') / 2,
+                window3[middle_day_open_i:middle_day_close_i + 1]
+            )
+
+            # final 5 minutes should be 1000-1004
+            np.testing.assert_array_equal(range(1000, 1005), window3[-5:])
+
+            # after last event
+            window4 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-07 14:40', tz='UTC'),
+                5,
+                '1m',
+                'close',
+                'minute',
+            )[asset]
+
+            # should not be adjusted, should be 1005 to 1009
+            np.testing.assert_array_equal(range(1005, 1010), window4)
+
+    def test_minute_dividends(self):
+        # self.DIVIDEND_ASSET had dividends on 1/6 and 1/7
+
+        # before any of the dividends
+        window1 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            pd.Timestamp('2015-01-05 21:00', tz='UTC'),
+            10,
+            '1m',
+            'close',
+            'minute',
+        )[self.DIVIDEND_ASSET]
+
+        np.testing.assert_array_equal(np.array(range(382, 392)), window1)
+
+        # straddling the first dividend (10 active equity minutes)
+        window2_start = pd.Timestamp('2015-01-05 20:56', tz='UTC')
+        window2_end = pd.Timestamp('2015-01-06 14:35', tz='UTC')
+        window2_count = len(
+            self.trading_calendar.minutes_in_range(window2_start, window2_end)
+        )
+        window2 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            window2_end,
+            window2_count,
+            '1m',
+            'close',
+            'minute',
+        )[self.DIVIDEND_ASSET]
+
+        # first dividend is 2%, so the first five values should be 2% lower
+        # than before
+        np.testing.assert_array_almost_equal(
+            np.array(range(387, 392), dtype='float64') * 0.98,
+            window2[0:5]
         )
 
-        container.ensure_spec(new_spec, initial_dt, bar_data)
+        # second half of window is unadjusted
+        np.testing.assert_array_equal(range(392, 397), window2[-5:])
 
-        if bar_count > 1:
-            digest_panel = container.digest_panels[new_spec.frequency]
-            self.assertEqual(digest_panel.window_length, bar_count - 1)
+        # straddling both dividends (on the equities calendar, this is
+        # 5 minutes of 1/7, 390 of 1/6, and 5 minutes of 1/5).
+        window3_start = pd.Timestamp('2015-01-05 20:56', tz='UTC')
+        window3_end = pd.Timestamp('2015-01-07 14:35', tz='UTC')
+        window3_minutes = self.trading_calendar.minutes_in_range(
+            window3_start,
+            window3_end,
+        )
+        window3_count = len(window3_minutes)
+        window3 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            window3_end,
+            window3_count,
+            '1m',
+            'close',
+            'minute',
+        )[self.DIVIDEND_ASSET]
+
+        # first five minute from 1/7 should be hit by 0.9408 (= 0.98 * 0.96)
+        np.testing.assert_array_almost_equal(
+            np.around(np.array(range(387, 392), dtype='float64') * 0.9408, 3),
+            window3[0:5]
+        )
+
+        # next 390 minutes (the 2015-01-06 session) should be hit by 0.96
+        # (second dividend)
+        middle_day_open_i = window3_minutes.searchsorted(
+            pd.Timestamp('2015-01-06 14:31', tz='UTC')
+        )
+        middle_day_close_i = window3_minutes.searchsorted(
+            pd.Timestamp('2015-01-06 21:00', tz='UTC')
+        )
+        np.testing.assert_array_almost_equal(
+            np.array(range(392, 782), dtype='float64') * 0.96,
+            window3[middle_day_open_i:middle_day_close_i + 1]
+        )
+
+        # last 5 minutes should not be adjusted
+        np.testing.assert_array_equal(np.array(range(782, 787)), window3[-5:])
+
+    def test_passing_iterable_to_history_regular_hours(self):
+        # regular hours
+        current_dt = pd.Timestamp("2015-01-06 9:45", tz='US/Eastern')
+        bar_data = self.create_bardata(
+            lambda: current_dt,
+        )
+
+        bar_data.history(pd.Index([self.ASSET1, self.ASSET2]),
+                         "high", 5, "1m")
+
+    def test_passing_iterable_to_history_bts(self):
+        # before market hours
+        current_dt = pd.Timestamp("2015-01-07 8:45", tz='US/Eastern')
+        bar_data = self.create_bardata(
+            lambda: current_dt,
+        )
+
+        with handle_non_market_minutes(bar_data):
+            bar_data.history(pd.Index([self.ASSET1, self.ASSET2]),
+                             "high", 5, "1m")
+
+    def test_overnight_adjustments(self):
+        # Should incorporate adjustments on midnight 01/06
+        current_dt = pd.Timestamp('2015-01-06 8:45', tz='US/Eastern')
+        bar_data = self.create_bardata(
+            lambda: current_dt,
+        )
+
+        adj_expected = {
+            'open': np.arange(8381, 8391) / 4.0,
+            'high': np.arange(8382, 8392) / 4.0,
+            'low': np.arange(8379, 8389) / 4.0,
+            'close': np.arange(8380, 8390) / 4.0,
+            'volume': np.arange(8380, 8390) * 100 * 4.0,
+            'price': np.arange(8380, 8390) / 4.0,
+        }
+
+        expected = {
+            'open': np.arange(383, 393) / 2.0,
+            'high': np.arange(384, 394) / 2.0,
+            'low': np.arange(381, 391) / 2.0,
+            'close': np.arange(382, 392) / 2.0,
+            'volume': np.arange(382, 392) * 100 * 2.0,
+            'price': np.arange(382, 392) / 2.0,
+        }
+
+        # Use a window looking back to 3:51pm from 8:45am the following day.
+        # This contains the last ten minutes of the equity session for
+        # 2015-01-05.
+        window_start = pd.Timestamp('2015-01-05 20:51', tz='UTC')
+        window_end = pd.Timestamp('2015-01-06 13:44', tz='UTC')
+        window_length = len(
+            self.trading_calendar.minutes_in_range(window_start, window_end)
+        )
+
+        with handle_non_market_minutes(bar_data):
+            # Single field, single asset
+            for field in ALL_FIELDS:
+                values = bar_data.history(
+                    self.SPLIT_ASSET,
+                    field,
+                    window_length,
+                    '1m',
+                )
+
+                # The first 10 bars the `values` correspond to the last
+                # 10 minutes in the 2015-01-05 session.
+                np.testing.assert_array_equal(values.values[:10],
+                                              adj_expected[field],
+                                              err_msg=field)
+
+            # Multi field, single asset
+            values = bar_data.history(
+                self.SPLIT_ASSET, ['open', 'volume'], window_length, '1m'
+            )
+            np.testing.assert_array_equal(values.open.values[:10],
+                                          adj_expected['open'])
+            np.testing.assert_array_equal(values.volume.values[:10],
+                                          adj_expected['volume'])
+
+            # Single field, multi asset
+            values = bar_data.history(
+                [self.SPLIT_ASSET, self.ASSET2], 'open', window_length, '1m'
+            )
+            np.testing.assert_array_equal(values[self.SPLIT_ASSET].values[:10],
+                                          adj_expected['open'])
+            np.testing.assert_array_equal(values[self.ASSET2].values[:10],
+                                          expected['open'] * 2)
+
+            # Multi field, multi asset
+            values = bar_data.history(
+                [self.SPLIT_ASSET, self.ASSET2],
+                ['open', 'volume'],
+                window_length,
+                '1m',
+            )
+            np.testing.assert_array_equal(
+                values.open[self.SPLIT_ASSET].values[:10],
+                adj_expected['open']
+            )
+            np.testing.assert_array_equal(
+                values.volume[self.SPLIT_ASSET].values[:10],
+                adj_expected['volume']
+            )
+            np.testing.assert_array_equal(
+                values.open[self.ASSET2].values[:10],
+                expected['open'] * 2
+            )
+            np.testing.assert_array_equal(
+                values.volume[self.ASSET2].values[:10],
+                expected['volume'] / 2
+            )
+
+    def test_minute_early_close(self):
+        # 2014-07-03 is an early close
+        # HALF_DAY_TEST_ASSET started trading on 2014-07-02, how convenient
+        #
+        # five minutes into the day after the early close, get 20 1m bars
+
+        cal = self.trading_calendar
+
+        window_start = pd.Timestamp('2014-07-03 16:46:00', tz='UTC')
+        window_end = pd.Timestamp('2014-07-07 13:35:00', tz='UTC')
+        bar_count = len(cal.minutes_in_range(window_start, window_end))
+
+        window = self.data_portal.get_history_window(
+            [self.HALF_DAY_TEST_ASSET],
+            window_end,
+            bar_count,
+            '1m',
+            'close',
+            'minute',
+        )[self.HALF_DAY_TEST_ASSET]
+
+        # 390 minutes for 7/2, 210 minutes for 7/3, 7/4-7/6 closed
+        # first minute of 7/7 is the 600th trading minute for this asset
+        # this asset's first minute had a close value of 2, so every value is
+        # 2 + (minute index)
+        expected = range(587, 607)
+
+        # First 15 bars on occur at the end of 2014-07-03.
+        np.testing.assert_array_equal(window[:15], expected[:15])
+        # Interim bars (only on other calendars) should all be nan.
+        np.testing.assert_array_equal(
+            window[15:-5],
+            np.full(len(window) - 20, np.nan),
+        )
+        # Last 5 bars occur at the start of 2014-07-07.
+        np.testing.assert_array_equal(window[-5:], expected[-5:])
+
+        self.assertEqual(
+            window.index[14],
+            pd.Timestamp('2014-07-03 17:00', tz='UTC')
+        )
+
+        self.assertEqual(
+            window.index[-5],
+            pd.Timestamp('2014-07-07 13:31', tz='UTC')
+        )
+
+    def test_minute_different_lifetimes(self):
+        cal = self.trading_calendar
+        equity_cal = self.trading_calendars[Equity]
+
+        # at trading start, only asset1 existed
+        day = self.trading_calendar.next_session_label(self.TRADING_START_DT)
+
+        # Range containing 100 equity minutes, possibly more on other
+        # calendars (i.e. futures).
+        window_start = pd.Timestamp('2014-01-03 19:22', tz='UTC')
+        window_end = pd.Timestamp('2014-01-06 14:31', tz='UTC')
+        bar_count = len(cal.minutes_in_range(window_start, window_end))
+
+        equity_cal = self.trading_calendars[Equity]
+        first_equity_open, _ = equity_cal.open_and_close_for_session(day)
+
+        asset1_minutes = equity_cal.minutes_for_sessions_in_range(
+            self.ASSET1.start_date,
+            self.ASSET1.end_date
+        )
+        asset1_idx = asset1_minutes.searchsorted(first_equity_open)
+
+        window = self.data_portal.get_history_window(
+            [self.ASSET1, self.ASSET2],
+            first_equity_open,
+            bar_count,
+            '1m',
+            'close',
+            'minute',
+        )
+
+        expected = range(asset1_idx - 97, asset1_idx + 3)
+
+        # First 99 bars occur on the previous day,
+        np.testing.assert_array_equal(
+            window[self.ASSET1][:99],
+            expected[:99],
+        )
+        # Any interim bars are not active equity minutes, so should all
+        # be nan.
+        np.testing.assert_array_equal(
+            window[self.ASSET1][99:-1],
+            np.full(len(window) - 100, np.nan),
+        )
+        # Final bar in the window is the first equity bar of `day`.
+        np.testing.assert_array_equal(
+            window[self.ASSET1][-1:],
+            expected[-1:],
+        )
+
+        # All NaNs for ASSET2, since it hasn't started yet.
+        np.testing.assert_array_equal(
+            window[self.ASSET2],
+            np.full(len(window), np.nan),
+        )
+
+    def test_history_window_before_first_trading_day(self):
+        # trading_start is 2/3/2014
+        # get a history window that starts before that, and ends after that
+        first_day_minutes = self.trading_calendar.minutes_for_session(
+            self.TRADING_START_DT
+        )
+        exp_msg = (
+            'History window extends before 2014-01-03. To use this history '
+            'window, start the backtest on or after 2014-01-06.'
+        )
+        for field in OHLCP:
+            with self.assertRaisesRegexp(
+                    HistoryWindowStartsBeforeData, exp_msg):
+                self.data_portal.get_history_window(
+                    [self.ASSET1],
+                    first_day_minutes[5],
+                    15,
+                    '1m',
+                    'price',
+                    'minute',
+                )[self.ASSET1]
+
+    def test_daily_history_blended(self):
+        # daily history windows that end mid-day use minute values for the
+        # last day
+
+        # January 2015 has both daily and minute data for ASSET2
+        day = pd.Timestamp('2015-01-07', tz='UTC')
+        minutes = self.trading_calendar.minutes_for_session(day)
+
+        equity_cal = self.trading_calendars[Equity]
+        equity_minutes = equity_cal.minutes_for_session(day)
+        equity_open, equity_close = equity_minutes[0], equity_minutes[-1]
+
+        # minute data, baseline:
+        # Jan 5: 2 to 391
+        # Jan 6: 392 to 781
+        # Jan 7: 782 to 1172
+        for minute in minutes:
+            idx = equity_minutes.searchsorted(min(minute, equity_close))
+
+            for field in ALL_FIELDS:
+
+                window = self.data_portal.get_history_window(
+                    [self.ASSET2],
+                    minute,
+                    3,
+                    '1d',
+                    field,
+                    'minute',
+                )[self.ASSET2]
+
+                self.assertEqual(len(window), 3)
+
+                if field == 'open':
+                    self.assertEqual(window[0], 3)
+                    self.assertEqual(window[1], 393)
+                elif field == 'high':
+                    self.assertEqual(window[0], 393)
+                    self.assertEqual(window[1], 783)
+                elif field == 'low':
+                    self.assertEqual(window[0], 1)
+                    self.assertEqual(window[1], 391)
+                elif field == 'close':
+                    self.assertEqual(window[0], 391)
+                    self.assertEqual(window[1], 781)
+                elif field == 'volume':
+                    self.assertEqual(window[0], 7663500)
+                    self.assertEqual(window[1], 22873500)
+
+                last_val = -1
+
+                if minute < equity_open:
+                    # If before the equity calendar open, we don't yet
+                    # have data (but price is forward-filled).
+                    if field == 'volume':
+                        last_val = 0
+                    elif field == 'price':
+                        last_val = window[1]
+                    else:
+                        last_val = nan
+                elif field == 'open':
+                    last_val = 783
+                elif field == 'high':
+                    # since we increase monotonically, it's just the last
+                    # value
+                    last_val = 784 + idx
+                elif field == 'low':
+                    # since we increase monotonically, the low is the first
+                    # value of the day
+                    last_val = 781
+                elif field == 'close' or field == 'price':
+                    last_val = 782 + idx
+                elif field == 'volume':
+                    # for volume, we sum up all the minutely volumes so far
+                    # today
+
+                    last_val = sum(np.array(range(782, 782 + idx + 1)) * 100)
+
+                np.testing.assert_equal(window[-1], last_val)
+
+    @parameterized.expand(ALL_FIELDS)
+    def test_daily_history_blended_gaps(self, field):
+        # daily history windows that end mid-day use minute values for the
+        # last day
+
+        # January 2015 has both daily and minute data for ASSET2
+        day = pd.Timestamp('2015-01-08', tz='UTC')
+        minutes = self.trading_calendar.minutes_for_session(day)
+
+        equity_cal = self.trading_calendars[Equity]
+        equity_minutes = equity_cal.minutes_for_session(day)
+        equity_open, equity_close = equity_minutes[0], equity_minutes[-1]
+
+        # minute data, baseline:
+        # Jan 5: 2 to 391
+        # Jan 6: 392 to 781
+        # Jan 7: 782 to 1172
+        for minute in minutes:
+            idx = equity_minutes.searchsorted(min(minute, equity_close))
+
+            window = self.data_portal.get_history_window(
+                [self.ASSET2],
+                minute,
+                3,
+                '1d',
+                field,
+                'minute',
+            )[self.ASSET2]
+
+            self.assertEqual(len(window), 3)
+
+            if field == 'open':
+                self.assertEqual(window[0], 393)
+                self.assertEqual(window[1], 783)
+            elif field == 'high':
+                self.assertEqual(window[0], 783)
+                self.assertEqual(window[1], 1173)
+            elif field == 'low':
+                self.assertEqual(window[0], 391)
+                self.assertEqual(window[1], 781)
+            elif field == 'close':
+                self.assertEqual(window[0], 781)
+                self.assertEqual(window[1], 1171)
+            elif field == 'price':
+                self.assertEqual(window[0], 781)
+                self.assertEqual(window[1], 1171)
+            elif field == 'volume':
+                self.assertEqual(window[0], 22873500)
+                self.assertEqual(window[1], 38083500)
+
+            last_val = -1
+
+            if minute < equity_open:
+                # If before the equity calendar open, we don't yet
+                # have data (but price is forward-filled).
+                if field == 'volume':
+                    last_val = 0
+                elif field == 'price':
+                    last_val = window[1]
+                else:
+                    last_val = nan
+            elif field == 'open':
+                if idx == 0:
+                    last_val = np.nan
+                else:
+                    last_val = 1174.0
+            elif field == 'high':
+                # since we increase monotonically, it's just the last
+                # value
+                if idx == 0:
+                    last_val = np.nan
+                elif idx == 389:
+                    last_val = 1562.0
+                else:
+                    last_val = 1174.0 + idx
+            elif field == 'low':
+                # since we increase monotonically, the low is the first
+                # value of the day
+                if idx == 0:
+                    last_val = np.nan
+                else:
+                    last_val = 1172.0
+            elif field == 'close':
+                if idx == 0:
+                    last_val = np.nan
+                elif idx == 389:
+                    last_val = 1172.0 + 388
+                else:
+                    last_val = 1172.0 + idx
+            elif field == 'price':
+                if idx == 0:
+                    last_val = 1171.0
+                elif idx == 389:
+                    last_val = 1172.0 + 388
+                else:
+                    last_val = 1172.0 + idx
+            elif field == 'volume':
+                # for volume, we sum up all the minutely volumes so far
+                # today
+                if idx == 0:
+                    last_val = 0
+                elif idx == 389:
+                    last_val = sum(
+                        np.array(range(1173, 1172 + 388 + 1)) * 100)
+                else:
+                    last_val = sum(
+                        np.array(range(1173, 1172 + idx + 1)) * 100)
+
+            np.testing.assert_almost_equal(window[-1], last_val,
+                                           err_msg='field={0} minute={1}'.
+                                           format(field, minute))
+
+
+class NoPrefetchMinuteEquityHistoryTestCase(MinuteEquityHistoryTestCase):
+    DATA_PORTAL_MINUTE_HISTORY_PREFETCH = 0
+    DATA_PORTAL_DAILY_HISTORY_PREFETCH = 0
+
+
+class DailyEquityHistoryTestCase(WithHistory, ZiplineTestCase):
+    CREATE_BARDATA_DATA_FREQUENCY = 'daily'
+
+    @classmethod
+    def make_equity_daily_bar_data(cls):
+        yield 1, cls.create_df_for_asset(
+            cls.START_DATE,
+            pd.Timestamp('2016-01-30', tz='UTC')
+        )
+        yield 3, cls.create_df_for_asset(
+            pd.Timestamp('2015-01-05', tz='UTC'),
+            pd.Timestamp('2015-12-31', tz='UTC'),
+            interval=10,
+            force_zeroes=True
+        )
+        yield cls.SHORT_ASSET_SID, cls.create_df_for_asset(
+            pd.Timestamp('2015-01-05', tz='UTC'),
+            pd.Timestamp('2015-01-06', tz='UTC'),
+        )
+
+        for sid in {2, 4, 5, 6}:
+            asset = cls.asset_finder.retrieve_asset(sid)
+            yield sid, cls.create_df_for_asset(
+                asset.start_date,
+                asset.end_date,
+            )
+
+    @classmethod
+    def create_df_for_asset(cls, start_day, end_day, interval=1,
+                            force_zeroes=False):
+        sessions = cls.trading_calendars[Equity].sessions_in_range(
+            start_day,
+            end_day,
+        )
+        sessions_count = len(sessions)
+
+        # default to 2 because the low array subtracts 1, and we don't
+        # want to start with a 0
+        sessions_arr = np.array(range(2, sessions_count + 2))
+
+        df = pd.DataFrame(
+            {
+                'open': sessions_arr + 1,
+                'high': sessions_arr + 2,
+                'low': sessions_arr - 1,
+                'close': sessions_arr,
+                'volume': 100 * sessions_arr,
+            },
+            index=sessions,
+        )
+
+        if interval > 1:
+            counter = 0
+            while counter < sessions_count:
+                df[counter:(counter + interval - 1)] = 0
+                counter += interval
+
+        return df
+
+    def test_daily_before_assets_trading(self):
+        # asset2 and asset3 both started trading in 2015
+
+        days = self.trading_calendar.sessions_in_range(
+            pd.Timestamp('2014-12-15', tz='UTC'),
+            pd.Timestamp('2014-12-18', tz='UTC'),
+        )
+
+        for idx, day in enumerate(days):
+            bar_data = self.create_bardata(
+                simulation_dt_func=lambda: day,
+            )
+            check_internal_consistency(
+                bar_data, [self.ASSET2, self.ASSET3], ALL_FIELDS, 10, '1d'
+            )
+
+            for field in ALL_FIELDS:
+                # OHLCP should be NaN
+                # Volume should be 0
+                asset2_series = bar_data.history(self.ASSET2, field, 10, '1d')
+                asset3_series = bar_data.history(self.ASSET3, field, 10, '1d')
+
+                if field == 'volume':
+                    np.testing.assert_array_equal(np.zeros(10), asset2_series)
+                    np.testing.assert_array_equal(np.zeros(10), asset3_series)
+                else:
+                    np.testing.assert_array_equal(
+                        np.full(10, np.nan),
+                        asset2_series
+                    )
+
+                    np.testing.assert_array_equal(
+                        np.full(10, np.nan),
+                        asset3_series
+                    )
+
+    def test_daily_regular(self):
+        # asset2 and asset3 both started on 1/5/2015, but asset3 trades every
+        # 10 days
+
+        # get the first 30 days of 2015
+        jan5 = pd.Timestamp('2015-01-05')
+
+        # Regardless of the calendar used for this test, equities will
+        # only have data on NYSE sessions.
+        days = self.trading_calendars[Equity].sessions_window(jan5, 30)
+
+        for idx, day in enumerate(days):
+            self.verify_regular_dt(idx, day, 'daily')
+
+    def test_daily_some_assets_stopped(self):
+        # asset1 ends on 2016-01-30
+        # asset2 ends on 2015-12-13
+
+        bar_data = self.create_bardata(
+            simulation_dt_func=lambda: pd.Timestamp('2016-01-06', tz='UTC'),
+        )
+
+        for field in OHLCP:
+            window = bar_data.history(
+                [self.ASSET1, self.ASSET2], field, 15, '1d'
+            )
+
+            # last 2 values for asset2 should be NaN (# of days since asset2
+            # delisted)
+            np.testing.assert_array_equal(
+                np.full(2, np.nan),
+                window[self.ASSET2][-2:]
+            )
+
+            # third from last value should not be NaN
+            self.assertFalse(np.isnan(window[self.ASSET2][-3]))
+
+        volume_window = bar_data.history(
+            [self.ASSET1, self.ASSET2], 'volume', 15, '1d'
+        )
+
+        np.testing.assert_array_equal(
+            np.zeros(2),
+            volume_window[self.ASSET2][-2:]
+        )
+
+        self.assertNotEqual(0, volume_window[self.ASSET2][-3])
+
+    def test_daily_after_asset_stopped(self):
+        # SHORT_ASSET trades on 1/5, 1/6, that's it.
+
+        days = self.trading_calendar.sessions_in_range(
+            pd.Timestamp('2015-01-07', tz='UTC'),
+            pd.Timestamp('2015-01-08', tz='UTC')
+        )
+
+        # days has 1/7, 1/8
+        for idx, day in enumerate(days):
+            bar_data = self.create_bardata(
+                simulation_dt_func=lambda: day,
+            )
+            check_internal_consistency(
+                bar_data, self.SHORT_ASSET, ALL_FIELDS, 2, '1d'
+            )
+
+            for field in ALL_FIELDS:
+                asset_series = bar_data.history(
+                    self.SHORT_ASSET, field, 2, '1d'
+                )
+
+                if idx == 0:
+                    # one value, then one NaN.  base value for 1/6 is 3.
+                    if field in OHLCP:
+                        self.assertEqual(
+                            3 + MINUTE_FIELD_INFO[field],
+                            asset_series.iloc[0]
+                        )
+
+                        self.assertTrue(np.isnan(asset_series.iloc[1]))
+                    elif field == 'volume':
+                        self.assertEqual(300, asset_series.iloc[0])
+                        self.assertEqual(0, asset_series.iloc[1])
+                else:
+                    # both NaNs
+                    if field in OHLCP:
+                        self.assertTrue(np.isnan(asset_series.iloc[0]))
+                        self.assertTrue(np.isnan(asset_series.iloc[1]))
+                    elif field == 'volume':
+                        self.assertEqual(0, asset_series.iloc[0])
+                        self.assertEqual(0, asset_series.iloc[1])
+
+    def test_daily_splits_and_mergers(self):
+        # self.SPLIT_ASSET and self.MERGER_ASSET had splits/mergers
+        # on 1/6 and 1/7.  they both started trading on 1/5
+
+        for asset in [self.SPLIT_ASSET, self.MERGER_ASSET]:
+            # before any of the adjustments
+            window1 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-05', tz='UTC'),
+                1,
+                '1d',
+                'close',
+                'daily',
+            )[asset]
+
+            np.testing.assert_array_equal(window1, [2])
+
+            window1_volume = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-05', tz='UTC'),
+                1,
+                '1d',
+                'volume',
+                'daily',
+            )[asset]
+
+            np.testing.assert_array_equal(window1_volume, [200])
+
+            # straddling the first event
+            window2 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-06', tz='UTC'),
+                2,
+                '1d',
+                'close',
+                'daily',
+            )[asset]
+
+            # first value should be halved, second value unadjusted
+            np.testing.assert_array_equal([0.5, 3], window2)
+
+            window2_volume = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-06', tz='UTC'),
+                2,
+                '1d',
+                'volume',
+                'daily',
+            )[asset]
+
+            if asset == self.SPLIT_ASSET:
+                # first value should be doubled, second value unadjusted
+                np.testing.assert_array_equal(window2_volume, [800, 300])
+            elif asset == self.MERGER_ASSET:
+                np.testing.assert_array_equal(window2_volume, [200, 300])
+
+            # straddling both events
+            window3 = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-07', tz='UTC'),
+                3,
+                '1d',
+                'close',
+                'daily',
+            )[asset]
+
+            np.testing.assert_array_equal([0.25, 1.5, 4], window3)
+
+            window3_volume = self.data_portal.get_history_window(
+                [asset],
+                pd.Timestamp('2015-01-07', tz='UTC'),
+                3,
+                '1d',
+                'volume',
+                'daily',
+            )[asset]
+
+            if asset == self.SPLIT_ASSET:
+                np.testing.assert_array_equal(window3_volume, [1600, 600, 400])
+            elif asset == self.MERGER_ASSET:
+                np.testing.assert_array_equal(window3_volume, [200, 300, 400])
+
+    def test_daily_dividends(self):
+        # self.DIVIDEND_ASSET had dividends on 1/6 and 1/7
+
+        # before any dividend
+        window1 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            pd.Timestamp('2015-01-05', tz='UTC'),
+            1,
+            '1d',
+            'close',
+            'daily',
+        )[self.DIVIDEND_ASSET]
+
+        np.testing.assert_array_equal(window1, [2])
+
+        # straddling the first dividend
+        window2 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            pd.Timestamp('2015-01-06', tz='UTC'),
+            2,
+            '1d',
+            'close',
+            'daily',
+        )[self.DIVIDEND_ASSET]
+
+        # first dividend is 2%, so the first value should be 2% lower than
+        # before
+        np.testing.assert_array_equal([1.96, 3], window2)
+
+        # straddling both dividends
+        window3 = self.data_portal.get_history_window(
+            [self.DIVIDEND_ASSET],
+            pd.Timestamp('2015-01-07', tz='UTC'),
+            3,
+            '1d',
+            'close',
+            'daily',
+        )[self.DIVIDEND_ASSET]
+
+        # second dividend is 0.96
+        # first value should be 0.9408 of its original value, rounded to 3
+        # digits. second value should be 0.96 of its original value
+        np.testing.assert_array_equal([1.882, 2.88, 4], window3)
+
+    def test_daily_blended_some_assets_stopped(self):
+        # asset1 ends on 2016-01-30
+        # asset2 ends on 2016-01-04
+
+        bar_data = self.create_bardata(
+            simulation_dt_func=lambda:
+            pd.Timestamp('2016-01-06 16:00', tz='UTC'),
+        )
+
+        for field in OHLCP:
+            window = bar_data.history(
+                [self.ASSET1, self.ASSET2], field, 15, '1d'
+            )
+
+            # last 2 values for asset2 should be NaN
+            np.testing.assert_array_equal(
+                np.full(2, np.nan),
+                window[self.ASSET2][-2:]
+            )
+
+            # third from last value should not be NaN
+            self.assertFalse(np.isnan(window[self.ASSET2][-3]))
+
+        volume_window = bar_data.history(
+            [self.ASSET1, self.ASSET2], 'volume', 15, '1d'
+        )
+
+        np.testing.assert_array_equal(
+            np.zeros(2),
+            volume_window[self.ASSET2][-2:]
+        )
+
+        self.assertNotEqual(0, volume_window[self.ASSET2][-3])
+
+    def test_history_window_before_first_trading_day(self):
+        # trading_start is 2/3/2014
+        # get a history window that starts before that, and ends after that
+        second_day = self.trading_calendar.next_session_label(
+            self.TRADING_START_DT
+        )
+
+        exp_msg = (
+            'History window extends before 2014-01-03. To use this history '
+            'window, start the backtest on or after 2014-01-09.'
+        )
+
+        with self.assertRaisesRegexp(HistoryWindowStartsBeforeData, exp_msg):
+            self.data_portal.get_history_window(
+                [self.ASSET1],
+                second_day,
+                4,
+                '1d',
+                'price',
+                'daily',
+            )[self.ASSET1]
+
+        with self.assertRaisesRegexp(HistoryWindowStartsBeforeData, exp_msg):
+            self.data_portal.get_history_window(
+                [self.ASSET1],
+                second_day,
+                4,
+                '1d',
+                'volume',
+                'daily',
+            )[self.ASSET1]
+
+        # Use a minute to force minute mode.
+        first_minute = \
+            self.trading_calendar.schedule.market_open[self.TRADING_START_DT]
+
+        with self.assertRaisesRegexp(HistoryWindowStartsBeforeData, exp_msg):
+            self.data_portal.get_history_window(
+                [self.ASSET2],
+                first_minute,
+                4,
+                '1d',
+                'close',
+                'daily',
+            )[self.ASSET2]
+
+    def test_history_window_different_order(self):
+        """
+        Prevent regression on a bug where the passing the same assets, but
+        in a different order would return a history window with the values,
+        but not the keys, in order of the first history call.
+        """
+        # Both ASSET1 and ASSET2 have trades on this date.
+        day = self.ASSET2.end_date
+
+        window_1 = self.data_portal.get_history_window(
+            [self.ASSET1, self.ASSET2],
+            day,
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        window_2 = self.data_portal.get_history_window(
+            [self.ASSET2, self.ASSET1],
+            day,
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        np.testing.assert_almost_equal(window_1[self.ASSET1].values,
+                                       window_2[self.ASSET1].values)
+        np.testing.assert_almost_equal(window_1[self.ASSET2].values,
+                                       window_2[self.ASSET2].values)
+
+    def test_history_window_out_of_order_dates(self):
+        """
+        Use a history window with non-monotonically increasing dates.
+        A scenario which does not occur during simulations, but useful
+        for using a history loader in a notebook.
+        """
+
+        window_1 = self.data_portal.get_history_window(
+            [self.ASSET1],
+            pd.Timestamp('2014-02-07', tz='UTC'),
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        window_2 = self.data_portal.get_history_window(
+            [self.ASSET1],
+            pd.Timestamp('2014-02-05', tz='UTC'),
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        window_3 = self.data_portal.get_history_window(
+            [self.ASSET1],
+            pd.Timestamp('2014-02-07', tz='UTC'),
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        window_4 = self.data_portal.get_history_window(
+            [self.ASSET1],
+            pd.Timestamp('2014-01-22', tz='UTC'),
+            4,
+            "1d",
+            "close",
+            'daily',
+        )
+
+        # Calling 02-07 after resetting the window should not affect the
+        # results.
+        np.testing.assert_almost_equal(window_1.values, window_3.values)
+
+        offsets = np.arange(4)
+
+        def assert_window_prices(window, prices):
+            np.testing.assert_almost_equal(window.loc[:, self.ASSET1], prices)
+
+        # Window 1 starts on the 23rd day of data for ASSET 1.
+        assert_window_prices(window_1, 23 + offsets)
+        # Window 2 starts on the 21st day of data for ASSET 1.
+        assert_window_prices(window_2, 21 + offsets)
+        # Window 3 starts on the 23rd day of data for ASSET 1.
+        assert_window_prices(window_3, 23 + offsets)
+
+        # Window 4 starts on the 11th day of data for ASSET 1.
+        if not self.trading_calendar.is_session('2014-01-20'):
+            assert_window_prices(window_4, 11 + offsets)
         else:
-            self.assertNotIn(new_spec.frequency, container.digest_panels)
+            # If not on the NYSE calendar, it is possible that MLK day
+            # (2014-01-20) is an active trading session. In that case,
+            # we expect a nan value for this asset.
+            assert_window_prices(window_4, [12, nan, 13, 14])
 
-        self.assert_history(container, new_spec, initial_dt)
 
-    @with_environment()
-    def assert_history(self, container, spec, dt, env=None):
-        hst = container.get_history(spec, dt)
+class NoPrefetchDailyEquityHistoryTestCase(DailyEquityHistoryTestCase):
+    DATA_PORTAL_MINUTE_HISTORY_PREFETCH = 0
+    DATA_PORTAL_DAILY_HISTORY_PREFETCH = 0
 
-        self.assertEqual(len(hst), spec.bar_count)
 
-        back = spec.frequency.prev_bar
-        for n in reversed(hst.index):
-            self.assertEqual(dt, n)
-            dt = back(dt)
+class MinuteEquityHistoryFuturesCalendarTestCase(MinuteEquityHistoryTestCase):
+    TRADING_CALENDAR_STRS = ('NYSE', 'us_futures')
+    TRADING_CALENDAR_PRIMARY_CAL = 'us_futures'
+
+
+class DailyEquityHistoryFuturesCalendarTestCase(DailyEquityHistoryTestCase):
+    TRADING_CALENDAR_STRS = ('NYSE', 'us_futures')
+    TRADING_CALENDAR_PRIMARY_CAL = 'us_futures'

@@ -2,6 +2,7 @@
 Functions for ranking and sorting.
 """
 cimport cython
+from cpython cimport bool
 from numpy cimport (
     float64_t,
     import_array,
@@ -13,18 +14,74 @@ from numpy cimport (
     PyArray_DIMS,
     PyArray_EMPTY,
 )
-from numpy import nan
+from numpy import apply_along_axis, float64, isnan, nan
+from scipy.stats import rankdata
+
+from zipline.utils.numpy_utils import (
+    is_missing,
+    float64_dtype,
+    int64_dtype,
+    datetime64ns_dtype,
+)
+
 
 import_array()
 
 
-cdef double NAN = nan
+def rankdata_1d_descending(ndarray data, str method):
+    """
+    1D descending version of scipy.stats.rankdata.
+    """
+    return rankdata(-(data.view(float64)), method=method)
+
+
+def masked_rankdata_2d(ndarray data,
+                       ndarray mask,
+                       object missing_value,
+                       str method,
+                       bool ascending):
+    """
+    Compute masked rankdata on data on float64, int64, or datetime64 data.
+    """
+    cdef str dtype_name = data.dtype.name
+    if dtype_name not in ('float64', 'int64', 'datetime64[ns]'):
+        raise TypeError(
+            "Can't compute rankdata on array of dtype %r." % dtype_name
+        )
+
+    cdef ndarray missing_locations = (~mask | is_missing(data, missing_value))
+
+    # Interpret the bytes of integral data as floats for sorting.
+    data = data.copy().view(float64)
+    data[missing_locations] = nan
+    if not ascending:
+        data = -data
+
+    # OPTIMIZATION: Fast path the default case with our own specialized
+    # Cython implementation.
+    if method == 'ordinal':
+        result = rankdata_2d_ordinal(data)
+    else:
+        # FUTURE OPTIMIZATION:
+        # Write a less general "apply to rows" method that doesn't do all
+        # the extra work that apply_along_axis does.
+        result = apply_along_axis(rankdata, 1, data, method=method)
+
+        # On SciPy >= 0.17, rankdata returns integers for any method except
+        # average.
+        if result.dtype.name != 'float64':
+            result = result.astype('float64')
+
+    # rankdata will sort missing values into last place, but we want our nans
+    # to propagate, so explicitly re-apply.
+    result[missing_locations] = nan
+    return result
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.embedsignature(True)
-def rankdata_2d_ordinal(ndarray[float64_t, ndim=2] array):
+cpdef rankdata_2d_ordinal(ndarray[float64_t, ndim=2] array):
     """
     Equivalent to:
 

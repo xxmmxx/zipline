@@ -14,16 +14,35 @@
 # limitations under the License.
 import pandas as pd
 import pytz
+# import warnings
 
 from datetime import datetime
 from dateutil import rrule
 from functools import partial
 
+# from zipline.zipline_warnings import ZiplineDeprecationWarning
+
+# IMPORTANT: This module is deprecated and is only here for temporary backwards
+# compatibility.  Look at the `zipline.utils.calendars.trading_schedule`
+# module, as well as the calendar definitions in `zipline.utils.calendars`.
+
+# TODO: The new calendar API is currently in flux, so the deprecation
+#       warning for this module is currently disabled. Re-enable once
+#       the new API is stabilized.
+#
+# warnings.warn(
+#     "The `tradingcalendar` module is deprecated. See the "
+#     "`zipline.utils.calendars.trading_schedule` module,  as well as the "
+#     "calendar definitions in `zipline.utils.calendars`.",
+#     category=ZiplineDeprecationWarning,
+#     stacklevel=1,
+# )
+
 start = pd.Timestamp('1990-01-01', tz='UTC')
 end_base = pd.Timestamp('today', tz='UTC')
 # Give an aggressive buffer for logic that needs to use the next trading
 # day or minute.
-end = end_base + pd.datetools.relativedelta(years=1)
+end = end_base + pd.Timedelta(days=365)
 
 
 def canonicalize_datetime(dt):
@@ -247,6 +266,7 @@ def get_non_trading_days(start, end):
     non_trading_days.sort()
     return pd.DatetimeIndex(non_trading_days)
 
+
 non_trading_days = get_non_trading_days(start, end)
 trading_day = pd.tseries.offsets.CDay(holidays=non_trading_days)
 
@@ -255,6 +275,7 @@ def get_trading_days(start, end, trading_day=trading_day):
     return pd.date_range(start=start.date(),
                          end=end.date(),
                          freq=trading_day).tz_localize('UTC')
+
 
 trading_days = get_trading_days(start, end)
 
@@ -365,6 +386,7 @@ def get_early_closes(start, end):
     early_closes.sort()
     return pd.DatetimeIndex(early_closes)
 
+
 early_closes = get_early_closes(start, end)
 
 
@@ -390,7 +412,7 @@ def get_open_and_close(day, early_closes):
     return market_open, market_close
 
 
-def get_open_and_closes(trading_days, early_closes):
+def get_open_and_closes(trading_days, early_closes, get_open_and_close):
     open_and_closes = pd.DataFrame(index=trading_days,
                                    columns=('market_open', 'market_close'))
 
@@ -401,4 +423,6 @@ def get_open_and_closes(trading_days, early_closes):
 
     return open_and_closes
 
-open_and_closes = get_open_and_closes(trading_days, early_closes)
+
+open_and_closes = get_open_and_closes(trading_days, early_closes,
+                                      get_open_and_close)

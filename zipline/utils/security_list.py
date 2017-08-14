@@ -1,3 +1,4 @@
+import warnings
 from datetime import datetime
 from os import listdir
 import os.path
@@ -5,7 +6,10 @@ import os.path
 import pandas as pd
 import pytz
 import zipline
-from zipline.finance.trading import with_environment
+
+from zipline.errors import SymbolNotFound
+from zipline.finance.asset_restrictions import SecurityListRestrictions
+from zipline.zipline_warnings import ZiplineDeprecationWarning
 
 
 DATE_FORMAT = "%Y%m%d"
@@ -15,7 +19,7 @@ SECURITY_LISTS_DIR = os.path.join(zipline_dir, 'resources', 'security_lists')
 
 class SecurityList(object):
 
-    def __init__(self, data, current_date_func):
+    def __init__(self, data, current_date_func, asset_finder):
         """
         data: a nested dictionary:
             knowledge_date -> lookup_date ->
@@ -29,6 +33,7 @@ class SecurityList(object):
         self.current_date = current_date_func
         self.count = 0
         self._current_set = set()
+        self.asset_finder = asset_finder
 
     def make_knowledge_dates(self, data):
         knowledge_dates = sorted(
@@ -36,17 +41,26 @@ class SecurityList(object):
         return knowledge_dates
 
     def __iter__(self):
-        return iter(self.restricted_list)
+        warnings.warn(
+            'Iterating over security_lists is deprecated. Use '
+            '`for sid in <security_list>.current_securities(dt)` instead.',
+            category=ZiplineDeprecationWarning,
+            stacklevel=2
+        )
+        return iter(self.current_securities(self.current_date()))
 
     def __contains__(self, item):
-        return item in self.restricted_list
+        warnings.warn(
+            'Evaluating inclusion in security_lists is deprecated. Use '
+            '`sid in <security_list>.current_securities(dt)` instead.',
+            category=ZiplineDeprecationWarning,
+            stacklevel=2
+        )
+        return item in self.current_securities(self.current_date())
 
-    @property
-    def restricted_list(self):
-
-        cd = self.current_date()
+    def current_securities(self, dt):
         for kd in self._knowledge_dates:
-            if cd < kd:
+            if dt < kd:
                 break
             if kd in self._cache:
                 self._current_set = self._cache[kd]
@@ -68,15 +82,15 @@ class SecurityList(object):
             self._cache[kd] = self._current_set
         return self._current_set
 
-    @with_environment()
-    def update_current(self, effective_date, symbols, change_func, env=None):
+    def update_current(self, effective_date, symbols, change_func):
         for symbol in symbols:
-            asset = env.asset_finder.lookup_symbol(
-                symbol,
-                as_of_date=effective_date
-            )
+            try:
+                asset = self.asset_finder.lookup_symbol(
+                    symbol,
+                    as_of_date=effective_date
+                )
             # Pass if no Asset exists for the symbol
-            if asset is None:
+            except SymbolNotFound:
                 continue
             change_func(asset.sid)
 
@@ -86,8 +100,9 @@ class SecurityListSet(object):
     # list implementations.
     security_list_type = SecurityList
 
-    def __init__(self, current_date_func):
+    def __init__(self, current_date_func, asset_finder):
         self.current_date_func = current_date_func
+        self.asset_finder = asset_finder
         self._leveraged_etf = None
 
     @property
@@ -95,9 +110,14 @@ class SecurityListSet(object):
         if self._leveraged_etf is None:
             self._leveraged_etf = self.security_list_type(
                 load_from_directory('leveraged_etf_list'),
-                self.current_date_func
+                self.current_date_func,
+                asset_finder=self.asset_finder
             )
         return self._leveraged_etf
+
+    @property
+    def restrict_leveraged_etfs(self):
+        return SecurityListRestrictions(self.leveraged_etf_list)
 
 
 def load_from_directory(list_name):

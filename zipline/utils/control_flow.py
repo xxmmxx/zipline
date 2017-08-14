@@ -1,10 +1,7 @@
 """
 Control flow utilities.
 """
-from warnings import (
-    catch_warnings,
-    filterwarnings,
-)
+from six import iteritems
 
 
 class nullctx(object):
@@ -22,35 +19,27 @@ class nullctx(object):
         return False
 
 
-class WarningContext(object):
+def invert(d):
     """
-    Re-entrant contextmanager for contextually managing warnings.
+    Invert a dictionary into a dictionary of sets.
+
+    >>> invert({'a': 1, 'b': 2, 'c': 1})  # doctest: +SKIP
+    {1: {'a', 'c'}, 2: {'b'}}
     """
-    def __init__(self, *warning_specs):
-        self._warning_specs = warning_specs
-        self._catchers = []
-
-    def __enter__(self):
-        catcher = catch_warnings()
-        catcher.__enter__()
-        self._catchers.append(catcher)
-        for args, kwargs in self._warning_specs:
-            filterwarnings(*args, **kwargs)
-        return catcher
-
-    def __exit__(self, *exc_info):
-        catcher = self._catchers.pop()
-        return catcher.__exit__(*exc_info)
+    out = {}
+    for k, v in iteritems(d):
+        try:
+            out[v].add(k)
+        except KeyError:
+            out[v] = {k}
+    return out
 
 
-def ignore_nanwarnings():
+def invert_unique(d, check=True):
     """
-    Helper for building a WarningContext that ignores warnings from numpy's
-    nanfunctions.
+    Invert a dictionary with unique values into a dictionary with (k, v) pairs
+    flipped.
     """
-    return WarningContext(
-        (
-            ('ignore',),
-            {'category': RuntimeWarning, 'module': 'numpy.lib.nanfunctions'},
-        )
-    )
+    if check:
+        assert len(set(d.values())) == len(d), "Values were not unique!"
+    return {v: k for k, v in iteritems(d)}

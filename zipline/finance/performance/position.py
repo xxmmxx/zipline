@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2016 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ Position Tracking
     +-----------------+----------------------------------------------------+
     | key             | value                                              |
     +=================+====================================================+
-    | sid             | the sid for the asset held in this position        |
+    | asset           | the asset held in this position                    |
     +-----------------+----------------------------------------------------+
     | amount          | whole number of shares in the position             |
     +-----------------+----------------------------------------------------+
@@ -32,29 +32,24 @@ Position Tracking
 """
 
 from __future__ import division
-from math import (
-    copysign,
-    floor,
-)
-
-from copy import copy
-
+from math import copysign
+from collections import OrderedDict
+import numpy as np
 import logbook
-import zipline.protocol as zp
 
-from zipline.utils.serialization_utils import (
-    VERSION_LABEL
-)
+from zipline.assets import Future, Asset
+from zipline.utils.input_validation import expect_types
 
 log = logbook.Logger('Performance')
 
 
 class Position(object):
 
-    def __init__(self, sid, amount=0, cost_basis=0.0,
+    @expect_types(asset=Asset)
+    def __init__(self, asset, amount=0, cost_basis=0.0,
                  last_sale_price=0.0, last_sale_date=None):
 
-        self.sid = sid
+        self.asset = asset
         self.amount = amount
         self.cost_basis = cost_basis  # per share
         self.last_sale_price = last_sale_price
@@ -65,38 +60,32 @@ class Position(object):
         Register the number of shares we held at this dividend's ex date so
         that we can pay out the correct amount on the dividend's pay date.
         """
-        assert dividend['sid'] == self.sid
-        out = {'id': dividend['id']}
+        return {
+            'amount': self.amount * dividend.amount
+        }
 
-        # stock dividend
-        if dividend['payment_sid']:
-            out['payment_sid'] = dividend['payment_sid']
-            out['share_count'] = floor(self.amount * float(dividend['ratio']))
+    def earn_stock_dividend(self, stock_dividend):
+        """
+        Register the number of shares we held at this dividend's ex date so
+        that we can pay out the correct amount on the dividend's pay date.
+        """
+        return {
+            'payment_asset': stock_dividend.payment_asset,
+            'share_count': np.floor(
+                self.amount * float(stock_dividend.ratio)
+            )
+        }
 
-        # cash dividend
-        if dividend['net_amount']:
-            out['cash_amount'] = self.amount * dividend['net_amount']
-        elif dividend['gross_amount']:
-            out['cash_amount'] = self.amount * dividend['gross_amount']
-
-        payment_owed = zp.dividend_payment(out)
-        return payment_owed
-
-    def handle_split(self, split):
+    @expect_types(asset=Asset)
+    def handle_split(self, asset, ratio):
         """
         Update the position by the split ratio, and return the resulting
         fractional share that will be converted into cash.
 
         Returns the unused cash.
         """
-        if self.sid != split.sid:
-            raise Exception("updating split with the wrong sid!")
-
-        ratio = split.ratio
-
-        log.info("handling split for sid = " + str(split.sid) +
-                 ", ratio = " + str(split.ratio))
-        log.info("before split: " + str(self))
+        if self.asset != asset:
+            raise Exception("updating split with the wrong asset!")
 
         # adjust the # of shares by the ratio
         # (if we had 100 shares, and the ratio is 3,
@@ -108,7 +97,7 @@ class Position(object):
         raw_share_count = self.amount / float(ratio)
 
         # e.g., 33
-        full_share_count = floor(raw_share_count)
+        full_share_count = np.floor(raw_share_count)
 
         # e.g., 0.333
         fractional_share_count = raw_share_count - full_share_count
@@ -116,11 +105,7 @@ class Position(object):
         # adjust the cost basis to the nearest cent, e.g., 60.0
         new_cost_basis = round(self.cost_basis * ratio, 2)
 
-        # adjust the last sale price
-        new_last_sale_price = round(self.last_sale_price * ratio, 2)
-
         self.cost_basis = new_cost_basis
-        self.last_sale_price = new_last_sale_price
         self.amount = full_share_count
 
         return_cash = round(float(fractional_share_count * new_cost_basis), 2)
@@ -133,9 +118,9 @@ class Position(object):
         return return_cash
 
     def update(self, txn):
-        if self.sid != txn.sid:
+        if self.asset != txn.asset:
             raise Exception('updating position with txn for a '
-                            'different sid')
+                            'different asset')
 
         total_shares = self.amount + txn.amount
 
@@ -165,7 +150,8 @@ class Position(object):
 
         self.amount = total_shares
 
-    def adjust_commission_cost_basis(self, commission):
+    @expect_types(asset=Asset)
+    def adjust_commission_cost_basis(self, asset, cost):
         """
         A note about cost-basis in zipline: all positions are considered
         to share a cost basis, even if they were executed in different
@@ -176,9 +162,9 @@ class Position(object):
         all shares in a position.
         """
 
-        if commission.sid != self.sid:
-            raise Exception('Updating a commission for a different sid?')
-        if commission.cost == 0.0:
+        if asset != self.asset:
+            raise Exception('Updating a commission for a different asset?')
+        if cost == 0.0:
             return
 
         # If we no longer hold this position, there is no cost basis to
@@ -186,15 +172,31 @@ class Position(object):
         if self.amount == 0:
             return
 
+        # We treat cost basis as the share price where we have broken even.
+        # For longs, commissions cause a relatively straight forward increase
+        # in the cost basis.
+        #
+        # For shorts, you actually want to decrease the cost basis because you
+        # break even and earn a profit when the share price decreases.
+        #
+        # Shorts are represented as having a negative `amount`.
+        #
+        # The multiplication and division by `amount` cancel out leaving the
+        # cost_basis positive, while subtracting the commission.
+
         prev_cost = self.cost_basis * self.amount
-        new_cost = prev_cost + commission.cost
+        if isinstance(asset, Future):
+            cost_to_use = cost / asset.multiplier
+        else:
+            cost_to_use = cost
+        new_cost = prev_cost + cost_to_use
         self.cost_basis = new_cost / self.amount
 
     def __repr__(self):
-        template = "sid: {sid}, amount: {amount}, cost_basis: {cost_basis}, \
+        template = "asset: {asset}, amount: {amount}, cost_basis: {cost_basis}, \
 last_sale_price: {last_sale_price}"
         return template.format(
-            sid=self.sid,
+            asset=self.asset,
             amount=self.amount,
             cost_basis=self.cost_basis,
             last_sale_price=self.last_sale_price
@@ -206,34 +208,13 @@ last_sale_price: {last_sale_price}"
         Returns a dict object of the form:
         """
         return {
-            'sid': self.sid,
+            'sid': self.asset,
             'amount': self.amount,
             'cost_basis': self.cost_basis,
             'last_sale_price': self.last_sale_price
         }
 
-    def __getstate__(self):
-        state_dict = copy(self.__dict__)
 
-        STATE_VERSION = 1
-        state_dict[VERSION_LABEL] = STATE_VERSION
-
-        return state_dict
-
-    def __setstate__(self, state):
-
-        OLDEST_SUPPORTED_STATE = 1
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("Position saved state is too old.")
-
-        self.__dict__.update(state)
-
-
-class positiondict(dict):
-
+class positiondict(OrderedDict):
     def __missing__(self, key):
-        pos = Position(key)
-        self[key] = pos
-        return pos
+        return None

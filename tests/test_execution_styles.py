@@ -12,31 +12,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from unittest import TestCase
-
+from nose_parameterized import parameterized
 from six.moves import range
 
-from nose_parameterized import parameterized
-
+from zipline.errors import BadOrderParameters
 from zipline.finance.execution import (
     LimitOrder,
     MarketOrder,
     StopLimitOrder,
     StopOrder,
 )
-
-from zipline.utils.test_utils import(
-    setup_logger,
-    teardown_logger,
-)
-
-from zipline.errors import(
-    BadOrderParameters
+from zipline.testing.fixtures import (
+    WithLogger,
+    ZiplineTestCase,
 )
 
 
-class ExecutionStyleTestCase(TestCase):
+class ExecutionStyleTestCase(WithLogger, ZiplineTestCase):
     """
     Tests for zipline ExecutionStyle classes.
     """
@@ -75,12 +67,6 @@ class ExecutionStyleTestCase(TestCase):
         (float('inf'),),
         (ArbitraryObject(),),
     ]
-
-    def setUp(self):
-        setup_logger(self)
-
-    def tearDown(self):
-        teardown_logger(self)
 
     @parameterized.expand(INVALID_PRICES)
     def test_invalid_prices(self, price):

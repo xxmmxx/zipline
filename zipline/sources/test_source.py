@@ -30,7 +30,6 @@ from zipline.protocol import (
     DATASOURCE_TYPE
 )
 from zipline.gens.utils import hash_args
-from zipline.finance.trading import with_environment
 
 
 def create_trade(sid, price, amount, datetime, source_id="test_factory"):
@@ -51,12 +50,11 @@ def create_trade(sid, price, amount, datetime, source_id="test_factory"):
     return trade
 
 
-@with_environment()
 def date_gen(start,
              end,
+             trading_calendar,
              delta=timedelta(minutes=1),
-             repeats=None,
-             env=None):
+             repeats=None):
     """
     Utility to generate a stream of dates.
     """
@@ -75,15 +73,19 @@ def date_gen(start,
         """
         cur = cur + delta
 
-        if not (env.is_trading_day
-                if daily_delta
-                else env.is_market_hours)(cur):
-            if daily_delta:
-                return env.next_trading_day(cur)
-            else:
-                return env.next_open_and_close(cur)[0]
-        else:
+        currently_executing = \
+            (daily_delta and (cur in trading_calendar.all_sessions)) or \
+            (trading_calendar.is_open_on_minute(cur))
+
+        if currently_executing:
             return cur
+        else:
+            if daily_delta:
+                return trading_calendar.minute_to_session_label(cur)
+            else:
+                return trading_calendar.open_and_close_for_session(
+                    trading_calendar.minute_to_session_label(cur)
+                )[0]
 
     # yield count trade events, all on trading days, and
     # during trading hours.
@@ -111,10 +113,12 @@ class SpecificEquityTrades(object):
     delta  : timedelta between internal events
     filter : filter to remove the sids
     """
-    @with_environment()
-    def __init__(self, env=None, *args, **kwargs):
+    def __init__(self, env, trading_calendar, *args, **kwargs):
         # We shouldn't get any positional arguments.
         assert len(args) == 0
+
+        self.env = env
+        self.trading_calendar = trading_calendar
 
         # Default to None for event_list and filter.
         self.event_list = kwargs.get('event_list')
@@ -127,16 +131,15 @@ class SpecificEquityTrades(object):
             self.count = kwargs.get('count', len(self.event_list))
             self.start = kwargs.get('start', self.event_list[0].dt)
             self.end = kwargs.get('end', self.event_list[-1].dt)
-            self.delta = kwargs.get(
-                'delta',
-                self.event_list[1].dt - self.event_list[0].dt)
+            self.delta = delta = kwargs.get('delta')
+            if delta is None:
+                self.delta = self.event_list[1].dt - self.event_list[0].dt
             self.concurrent = kwargs.get('concurrent', False)
 
             self.identifiers = kwargs.get(
                 'sids',
                 set(event.sid for event in self.event_list)
             )
-            env.update_asset_finder(identifiers=self.identifiers)
             assets_by_identifier = {}
             for identifier in self.identifiers:
                 assets_by_identifier[identifier] = env.asset_finder.\
@@ -160,7 +163,6 @@ class SpecificEquityTrades(object):
             self.concurrent = kwargs.get('concurrent', False)
 
             self.identifiers = kwargs.get('sids', [1, 2])
-            env.update_asset_finder(identifiers=self.identifiers)
             assets_by_identifier = {}
             for identifier in self.identifiers:
                 assets_by_identifier[identifier] = env.asset_finder.\
@@ -208,12 +210,14 @@ class SpecificEquityTrades(object):
                     end=self.end,
                     delta=self.delta,
                     repeats=len(self.sids),
+                    trading_calendar=self.trading_calendar,
                 )
             else:
                 date_generator = date_gen(
                     start=self.start,
                     end=self.end,
-                    delta=self.delta
+                    delta=self.delta,
+                    trading_calendar=self.trading_calendar,
                 )
 
             source_id = self.get_hash()

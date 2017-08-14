@@ -1,26 +1,31 @@
+{% set data = load_setup_py_data() %}
+
 package:
   name: zipline
-  version: 0.8.0rc1
+  version: {{ GIT_DESCRIBE_TAG|replace('v', '') }}
+
+build:
+  number: {{ GIT_DESCRIBE_NUMBER|int }}
+  string: np{{ NPY_VER|replace('.', '') }}py{{ PY_VER|replace('.', '') }}_{{ (
+    GIT_BUILD_STR if GIT_DESCRIBE_NUMBER|int != 0 else '0'
+  ) }}
 
 source:
-  fn: zipline-0.8.0rc1.tar.gz
-  url: https://pypi.python.org/packages/source/z/zipline/zipline-0.8.0rc1.tar.gz
-  md5: f23bdd0a8671b3b297072391fc817097
+  git_url: ../../
 
 requirements:
   build:
-    - python
-    - setuptools
-    - cython
+    - python {{ PY_VER }}*
+    - libgfortran ==1  # [linux and (np == 19)]
+    {% for req in data.get('build_requires', []) -%}
+    - {{req}}
+    {% endfor %}
   run:
     - python
-    - pytz
-    - requests
-    - numpy
-    - pandas
-    - scipy
-    - matplotlib
-    - logbook
+    - libgfortran ==1 # [linux and (np == 19)]
+    {% for req in data.get('install_requires', []) -%}
+    - {{req}}
+    {% endfor %}
 
 test:
   # Python imports
@@ -28,7 +33,7 @@ test:
     - zipline
 
 about:
-  home: https://github.com/quantopian/zipline
+  home: https://zipline.io
   license: Apache Software License
 
 # See

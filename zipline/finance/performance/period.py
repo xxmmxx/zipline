@@ -75,7 +75,7 @@ import logbook
 
 import numpy as np
 
-from zipline.finance.trading import TradingEnvironment
+from collections import namedtuple
 from zipline.assets import Future
 
 try:
@@ -88,14 +88,50 @@ from six import itervalues, iteritems
 
 import zipline.protocol as zp
 
-from zipline.utils.serialization_utils import (
-    VERSION_LABEL
-)
-
-from .position_tracker import PositionTracker
-
 log = logbook.Logger('Performance')
 TRADE_TYPE = zp.DATASOURCE_TYPE.TRADE
+
+
+PeriodStats = namedtuple('PeriodStats',
+                         ['net_liquidation',
+                          'gross_leverage',
+                          'net_leverage'])
+
+PrevSubPeriodStats = namedtuple(
+    'PrevSubPeriodStats', ['returns', 'pnl', 'cash_flow']
+)
+
+CurrSubPeriodStats = namedtuple(
+    'CurrSubPeriodStats', ['starting_value', 'starting_cash']
+)
+
+
+def calc_net_liquidation(ending_cash, long_value, short_value):
+    return ending_cash + long_value + short_value
+
+
+def calc_leverage(exposure, net_liq):
+    if net_liq != 0:
+        return exposure / net_liq
+
+    return np.inf
+
+
+def calc_period_stats(pos_stats, ending_cash):
+    net_liq = calc_net_liquidation(ending_cash,
+                                   pos_stats.long_value,
+                                   pos_stats.short_value)
+    gross_leverage = calc_leverage(pos_stats.gross_exposure, net_liq)
+    net_leverage = calc_leverage(pos_stats.net_exposure, net_liq)
+
+    return PeriodStats(
+        net_liquidation=net_liq,
+        gross_leverage=gross_leverage,
+        net_leverage=net_leverage)
+
+
+def calc_payout(multiplier, amount, old_price, price):
+    return (price - old_price) * multiplier * amount
 
 
 class PerformancePeriod(object):
@@ -103,25 +139,42 @@ class PerformancePeriod(object):
     def __init__(
             self,
             starting_cash,
+            data_frequency,
             period_open=None,
             period_close=None,
             keep_transactions=True,
             keep_orders=False,
-            serialize_positions=True):
+            serialize_positions=True,
+            name=None):
 
+        self.data_frequency = data_frequency
+
+        # Start and end of the entire period
         self.period_open = period_open
         self.period_close = period_close
 
+        self.initialize(starting_cash=starting_cash,
+                        starting_value=0.0,
+                        starting_exposure=0.0)
+
         self.ending_value = 0.0
         self.ending_exposure = 0.0
-        self.period_cash_flow = 0.0
-        self.pnl = 0.0
-
         self.ending_cash = starting_cash
-        # rollover initializes a number of self's attributes:
-        self.rollover()
+
+        self.subperiod_divider = None
+
+        # Keyed by asset, the previous last sale price of positions with
+        # payouts on price differences, e.g. Futures.
+        #
+        # This dt is not the previous minute to the minute for which the
+        # calculation is done, but the last sale price either before the period
+        # start, or when the price at execution.
+        self._payout_last_sale_prices = {}
+
         self.keep_transactions = keep_transactions
         self.keep_orders = keep_orders
+
+        self.name = name
 
         # An object to recycle via assigning new values
         # when returning portfolio information.
@@ -130,11 +183,24 @@ class PerformancePeriod(object):
         self._account_store = zp.Account()
         self.serialize_positions = serialize_positions
 
-        # This dict contains the known cash flow multipliers for sids and is
-        # keyed on sid
-        self._execution_cash_flow_multipliers = {}
-
     _position_tracker = None
+
+    def initialize(self, starting_cash, starting_value, starting_exposure):
+
+        # Performance stats for the entire period, returned externally
+        self.pnl = 0.0
+        self.returns = 0.0
+        self.cash_flow = 0.0
+        self.starting_value = starting_value
+        self.starting_exposure = starting_exposure
+        self.starting_cash = starting_cash
+
+        # The cumulative capital change occurred within the period
+        self._total_intraperiod_capital_change = 0.0
+
+        self.processed_transactions = {}
+        self.orders_by_modified = {}
+        self.orders_by_id = OrderedDict()
 
     @property
     def position_tracker(self):
@@ -148,15 +214,54 @@ class PerformancePeriod(object):
         # we only calculate perf once we inject PositionTracker
         self.calculate_performance()
 
+    def adjust_period_starting_capital(self, capital_change):
+        self.ending_cash += capital_change
+        self.starting_cash += capital_change
+
     def rollover(self):
-        self.starting_value = self.ending_value
-        self.starting_exposure = self.ending_exposure
-        self.starting_cash = self.ending_cash
-        self.period_cash_flow = 0.0
-        self.pnl = 0.0
-        self.processed_transactions = {}
-        self.orders_by_modified = {}
-        self.orders_by_id = OrderedDict()
+        # We are starting a new period
+        self.initialize(starting_cash=self.ending_cash,
+                        starting_value=self.ending_value,
+                        starting_exposure=self.ending_exposure)
+
+        self.subperiod_divider = None
+
+        payout_assets = self._payout_last_sale_prices.keys()
+
+        for asset in payout_assets:
+            if asset in self._payout_last_sale_prices:
+                self._payout_last_sale_prices[asset] = \
+                    self.position_tracker.positions[asset].last_sale_price
+            else:
+                del self._payout_last_sale_prices[asset]
+
+    def initialize_subperiod_divider(self):
+        self.calculate_performance()
+
+        # Initialize a subperiod divider to stash the current performance
+        # values. Current period starting values are set to equal ending values
+        # of the previous subperiod
+        self.subperiod_divider = SubPeriodDivider(
+            prev_returns=self.returns,
+            prev_pnl=self.pnl,
+            prev_cash_flow=self.cash_flow,
+            curr_starting_value=self.ending_value,
+            curr_starting_cash=self.ending_cash
+        )
+
+    def set_current_subperiod_starting_values(self, capital_change):
+        # Apply the capital change to the ending cash
+        self.ending_cash += capital_change
+
+        # Increment the total capital change occurred within the period
+        self._total_intraperiod_capital_change += capital_change
+
+        # Update the current subperiod starting cash to reflect the capital
+        # change
+        starting_value = self.subperiod_divider.curr_subperiod.starting_value
+        self.subperiod_divider.curr_subperiod = CurrSubPeriodStats(
+            starting_value=starting_value,
+            starting_cash=self.ending_cash)
 
     def handle_dividends_paid(self, net_cash_payment):
         if net_cash_payment:
@@ -166,30 +271,71 @@ class PerformancePeriod(object):
     def handle_cash_payment(self, payment_amount):
         self.adjust_cash(payment_amount)
 
-    def handle_commission(self, commission):
+    def handle_commission(self, cost):
         # Deduct from our total cash pool.
-        self.adjust_cash(-commission.cost)
+        self.adjust_cash(-cost)
 
     def adjust_cash(self, amount):
-        self.period_cash_flow += amount
+        self.cash_flow += amount
 
     def adjust_field(self, field, value):
         setattr(self, field, value)
 
+    def _get_payout_total(self, positions):
+        payouts = []
+        for asset, old_price in iteritems(self._payout_last_sale_prices):
+            pos = positions[asset]
+            amount = pos.amount
+            payout = calc_payout(
+                asset.multiplier,
+                amount,
+                old_price,
+                pos.last_sale_price)
+            payouts.append(payout)
+
+        return sum(payouts)
+
     def calculate_performance(self):
         pt = self.position_tracker
-        self.ending_value = pt.calculate_positions_value()
-        self.ending_exposure = pt.calculate_positions_exposure()
+        pos_stats = pt.stats()
+        self.ending_value = pos_stats.net_value
+        self.ending_exposure = pos_stats.net_exposure
 
-        total_at_start = self.starting_cash + self.starting_value
-        self.ending_cash = self.starting_cash + self.period_cash_flow
+        payout = self._get_payout_total(pt.positions)
+
+        self.ending_cash = self.starting_cash + self.cash_flow + \
+            self._total_intraperiod_capital_change + payout
+
         total_at_end = self.ending_cash + self.ending_value
 
-        self.pnl = total_at_end - total_at_start
-        if total_at_start != 0:
-            self.returns = self.pnl / total_at_start
+        # If there is a previous subperiod, the performance is calculated
+        # from the previous and current subperiods. Otherwise, the performance
+        # is calculated based on the start and end values of the whole period
+        if self.subperiod_divider:
+            starting_cash = self.subperiod_divider.curr_subperiod.starting_cash
+            total_at_start = starting_cash + \
+                self.subperiod_divider.curr_subperiod.starting_value
+
+            # Performance for this subperiod
+            pnl = total_at_end - total_at_start
+            if total_at_start != 0:
+                returns = pnl / total_at_start
+            else:
+                returns = 0.0
+
+            # Performance for this whole period
+            self.pnl = self.subperiod_divider.prev_subperiod.pnl + pnl
+            self.returns = \
+                (1 + self.subperiod_divider.prev_subperiod.returns) * \
+                (1 + returns) - 1
         else:
-            self.returns = 0.0
+            total_at_start = self.starting_cash + self.starting_value
+            self.pnl = total_at_end - total_at_start
+
+            if total_at_start != 0:
+                self.returns = self.pnl / total_at_start
+            else:
+                self.returns = 0.0
 
     def record_order(self, order):
         if self.keep_orders:
@@ -208,7 +354,24 @@ class PerformancePeriod(object):
             self.orders_by_id[order.id] = order
 
     def handle_execution(self, txn):
-        self.period_cash_flow += self._calculate_execution_cash_flow(txn)
+        self.cash_flow += self._calculate_execution_cash_flow(txn)
+
+        asset = txn.asset
+        if isinstance(asset, Future):
+            try:
+                old_price = self._payout_last_sale_prices[asset]
+                pos = self.position_tracker.positions[asset]
+                amount = pos.amount
+                price = txn.price
+                cash_adj = calc_payout(
+                    asset.multiplier, amount, old_price, price)
+                self.adjust_cash(cash_adj)
+                if amount + txn.amount == 0:
+                    del self._payout_last_sale_prices[asset]
+                else:
+                    self._payout_last_sale_prices[asset] = price
+            except KeyError:
+                self._payout_last_sale_prices[asset] = txn.price
 
         if self.keep_transactions:
             try:
@@ -216,26 +379,15 @@ class PerformancePeriod(object):
             except KeyError:
                 self.processed_transactions[txn.dt] = [txn]
 
-    def _calculate_execution_cash_flow(self, txn):
+    @staticmethod
+    def _calculate_execution_cash_flow(txn):
         """
         Calculates the cash flow from executing the given transaction
         """
-        # Check if the multiplier is cached. If it is not, look up the asset
-        # and cache the multiplier.
-        try:
-            multiplier = self._execution_cash_flow_multipliers[txn.sid]
-        except KeyError:
-            asset = TradingEnvironment.instance().asset_finder.\
-                retrieve_asset(txn.sid)
-            # Futures experience no cash flow on transactions
-            if isinstance(asset, Future):
-                multiplier = 0
-            else:
-                multiplier = 1
-            self._execution_cash_flow_multipliers[txn.sid] = multiplier
+        if isinstance(txn.asset, Future):
+            return 0.0
 
-        # Calculate and return the cash flow given the multiplier
-        return -1 * txn.price * txn.amount * multiplier
+        return -1 * txn.price * txn.amount
 
     # backwards compat. TODO: remove?
     @property
@@ -246,33 +398,16 @@ class PerformancePeriod(object):
     def position_amounts(self):
         return self.position_tracker.position_amounts
 
-    @property
-    def _net_liquidation_value(self):
-        pt = self.position_tracker
-        return self.ending_cash + pt._long_value() + pt._short_value()
-
-    def _gross_leverage(self):
-        net_liq = self._net_liquidation_value
-        if net_liq != 0:
-            return self.position_tracker._gross_exposure() / net_liq
-
-        return np.inf
-
-    def _net_leverage(self):
-        net_liq = self._net_liquidation_value
-        if net_liq != 0:
-            return self.position_tracker._net_exposure() / net_liq
-
-        return np.inf
-
     def __core_dict(self):
-        pt = self.position_tracker
+        pos_stats = self.position_tracker.stats()
+        period_stats = calc_period_stats(pos_stats, self.ending_cash)
+
         rval = {
             'ending_value': self.ending_value,
             'ending_exposure': self.ending_exposure,
             # this field is renamed to capital_used for backward
             # compatibility.
-            'capital_used': self.period_cash_flow,
+            'capital_used': self.cash_flow,
             'starting_value': self.starting_value,
             'starting_exposure': self.starting_exposure,
             'starting_cash': self.starting_cash,
@@ -282,14 +417,14 @@ class PerformancePeriod(object):
             'returns': self.returns,
             'period_open': self.period_open,
             'period_close': self.period_close,
-            'gross_leverage': self._gross_leverage(),
-            'net_leverage': self._net_leverage(),
-            'short_exposure': pt._short_exposure(),
-            'long_exposure': pt._long_exposure(),
-            'short_value': pt._short_value(),
-            'long_value': pt._long_value(),
-            'longs_count': pt._longs_count(),
-            'shorts_count': pt._shorts_count()
+            'gross_leverage': period_stats.gross_leverage,
+            'net_leverage': period_stats.net_leverage,
+            'short_exposure': pos_stats.short_exposure,
+            'long_exposure': pos_stats.long_exposure,
+            'short_value': pos_stats.short_value,
+            'long_value': pos_stats.long_value,
+            'longs_count': pos_stats.longs_count,
+            'shorts_count': pos_stats.shorts_count,
         }
 
         return rval
@@ -353,7 +488,7 @@ class PerformancePeriod(object):
         portfolio = self._portfolio_store
         # maintaining the old name for the portfolio field for
         # backward compatibility
-        portfolio.capital_used = self.period_cash_flow
+        portfolio.capital_used = self.cash_flow
         portfolio.starting_cash = self.starting_cash
         portfolio.portfolio_value = self.ending_cash + self.ending_value
         portfolio.pnl = self.pnl
@@ -367,6 +502,10 @@ class PerformancePeriod(object):
 
     def as_account(self):
         account = self._account_store
+
+        pt = self.position_tracker
+        pos_stats = pt.stats()
+        period_stats = calc_period_stats(pos_stats, self.ending_cash)
 
         # If no attribute is found on the PerformancePeriod resort to the
         # following default values. If an attribute is found use the existing
@@ -384,7 +523,7 @@ class PerformancePeriod(object):
                     self.ending_cash + self.ending_value)
         account.total_positions_value = \
             getattr(self, 'total_positions_value', self.ending_value)
-        account.total_positions_value = \
+        account.total_positions_exposure = \
             getattr(self, 'total_positions_exposure', self.ending_exposure)
         account.regt_equity = \
             getattr(self, 'regt_equity', self.ending_cash)
@@ -403,63 +542,30 @@ class PerformancePeriod(object):
                     self.ending_cash / (self.ending_cash + self.ending_value))
         account.day_trades_remaining = \
             getattr(self, 'day_trades_remaining', float('inf'))
-        account.leverage = \
-            getattr(self, 'leverage', self._gross_leverage())
-        account.net_leverage = self._net_leverage()
-        account.net_liquidation = \
-            getattr(self, 'net_liquidation', self._net_liquidation_value)
+        account.leverage = getattr(self, 'leverage',
+                                   period_stats.gross_leverage)
+        account.net_leverage = getattr(self, 'net_leverage',
+                                       period_stats.net_leverage)
+        account.net_liquidation = getattr(self, 'net_liquidation',
+                                          period_stats.net_liquidation)
         return account
 
-    def __getstate__(self):
-        state_dict = {k: v for k, v in iteritems(self.__dict__)
-                      if not k.startswith('_')}
 
-        state_dict['_portfolio_store'] = self._portfolio_store
-        state_dict['_account_store'] = self._account_store
+class SubPeriodDivider(object):
+    """
+    A marker for subdividing the period at the latest intraperiod capital
+    change. prev_subperiod and curr_subperiod hold information respective to
+    the previous and current subperiods.
+    """
 
-        state_dict['processed_transactions'] = \
-            dict(self.processed_transactions)
-        state_dict['orders_by_id'] = \
-            dict(self.orders_by_id)
-        state_dict['orders_by_modified'] = \
-            dict(self.orders_by_modified)
+    def __init__(self, prev_returns, prev_pnl, prev_cash_flow,
+                 curr_starting_value, curr_starting_cash):
 
-        STATE_VERSION = 2
-        state_dict[VERSION_LABEL] = STATE_VERSION
-        return state_dict
+        self.prev_subperiod = PrevSubPeriodStats(
+            returns=prev_returns,
+            pnl=prev_pnl,
+            cash_flow=prev_cash_flow)
 
-    def __setstate__(self, state):
-
-        OLDEST_SUPPORTED_STATE = 1
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("PerformancePeriod saved state is too old.")
-
-        processed_transactions = {}
-        processed_transactions.update(state.pop('processed_transactions'))
-
-        orders_by_id = OrderedDict()
-        orders_by_id.update(state.pop('orders_by_id'))
-
-        orders_by_modified = {}
-        orders_by_modified.update(state.pop('orders_by_modified'))
-        self.processed_transactions = processed_transactions
-        self.orders_by_id = orders_by_id
-        self.orders_by_modified = orders_by_modified
-
-        self._execution_cash_flow_multipliers = {}
-
-        # pop positions to use for v1
-        positions = state.pop('positions', None)
-        self.__dict__.update(state)
-
-        if version == 1:
-            # version 1 had PositionTracker logic inside of Period
-            # we create the PositionTracker here.
-            # Note: that in V2 it is assumed that the position_tracker
-            # will be dependency injected and so is not reconstructed
-            assert positions is not None, "positions should exist in v1"
-            position_tracker = PositionTracker()
-            position_tracker.update_positions(positions)
-            self.position_tracker = position_tracker
+        self.curr_subperiod = CurrSubPeriodStats(
+            starting_value=curr_starting_value,
+            starting_cash=curr_starting_cash)

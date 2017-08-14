@@ -12,12 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import datetime
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
-from copy import deepcopy
 
 
 def _ensure_index(x):

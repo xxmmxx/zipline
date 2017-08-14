@@ -1,5 +1,5 @@
 #
-# Copyright 2014 Quantopian, Inc.
+# Copyright 2015 Quantopian, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,66 +12,78 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import math
-import uuid
-
-from copy import copy
 from logbook import Logger
 from collections import defaultdict
+from copy import copy
 
-from six import text_type, iteritems
-from six.moves import filter
+from six import iteritems
 
-import zipline.errors
-import zipline.protocol as zp
-
+from zipline.assets import Equity, Future, Asset
+from zipline.finance.order import Order
 from zipline.finance.slippage import (
+    DEFAULT_FUTURE_VOLUME_SLIPPAGE_BAR_LIMIT,
+    VolatilityVolumeShare,
     VolumeShareSlippage,
-    transact_partial,
-    check_order_triggers
 )
-from zipline.finance.commission import PerShare
-from zipline.utils.protocol_utils import Enum
-
-from zipline.utils.serialization_utils import (
-    VERSION_LABEL
+from zipline.finance.commission import (
+    DEFAULT_PER_CONTRACT_COST,
+    FUTURE_EXCHANGE_FEES_BY_SYMBOL,
+    PerContract,
+    PerShare,
 )
+from zipline.finance.cancel_policy import NeverCancel
+from zipline.utils.input_validation import expect_types
 
 log = Logger('Blotter')
-
-ORDER_STATUS = Enum(
-    'OPEN',
-    'FILLED',
-    'CANCELLED',
-    'REJECTED',
-    'HELD',
-)
+warning_logger = Logger('AlgoWarning')
 
 
 class Blotter(object):
-
-    def __init__(self):
-        self.transact = transact_partial(VolumeShareSlippage(), PerShare())
-        # these orders are aggregated by sid
+    def __init__(self, data_frequency, equity_slippage=None,
+                 future_slippage=None, equity_commission=None,
+                 future_commission=None, cancel_policy=None):
+        # these orders are aggregated by asset
         self.open_orders = defaultdict(list)
+
         # keep a dict of orders by their own id
         self.orders = {}
-        # holding orders that have come in since the last
-        # event.
+
+        # holding orders that have come in since the last event.
         self.new_orders = []
         self.current_dt = None
+
         self.max_shares = int(1e+11)
+
+        self.slippage_models = {
+            Equity: equity_slippage or VolumeShareSlippage(),
+            Future: future_slippage or VolatilityVolumeShare(
+                volume_limit=DEFAULT_FUTURE_VOLUME_SLIPPAGE_BAR_LIMIT,
+            ),
+        }
+        self.commission_models = {
+            Equity: equity_commission or PerShare(),
+            Future: future_commission or PerContract(
+                cost=DEFAULT_PER_CONTRACT_COST,
+                exchange_fee=FUTURE_EXCHANGE_FEES_BY_SYMBOL,
+            ),
+        }
+
+        self.data_frequency = data_frequency
+
+        self.cancel_policy = cancel_policy if cancel_policy else NeverCancel()
 
     def __repr__(self):
         return """
 {class_name}(
-    transact_partial={transact_partial},
+    slippage_models={slippage_models},
+    commission_models={commission_models},
     open_orders={open_orders},
     orders={orders},
     new_orders={new_orders},
     current_dt={current_dt})
 """.strip().format(class_name=self.__class__.__name__,
-                   transact_partial=self.transact.args,
+                   slippage_models=self.slippage_models,
+                   commission_models=self.commission_models,
                    open_orders=self.open_orders,
                    orders=self.orders,
                    new_orders=self.new_orders,
@@ -80,24 +92,46 @@ class Blotter(object):
     def set_date(self, dt):
         self.current_dt = dt
 
-    def order(self, sid, amount, style, order_id=None):
+    @expect_types(asset=Asset)
+    def order(self, asset, amount, style, order_id=None):
+        """Place an order.
 
+        Parameters
+        ----------
+        asset : zipline.assets.Asset
+            The asset that this order is for.
+        amount : int
+            The amount of shares to order. If ``amount`` is positive, this is
+            the number of shares to buy or cover. If ``amount`` is negative,
+            this is the number of shares to sell or short.
+        style : zipline.finance.execution.ExecutionStyle
+            The execution style for the order.
+        order_id : str, optional
+            The unique identifier for this order.
+
+        Returns
+        -------
+        order_id : str or None
+            The unique identifier for this order, or None if no order was
+            placed.
+
+        Notes
+        -----
+        amount > 0 :: Buy/Cover
+        amount < 0 :: Sell/Short
+        Market order:    order(asset, amount)
+        Limit order:     order(asset, amount, style=LimitOrder(limit_price))
+        Stop order:      order(asset, amount, style=StopOrder(stop_price))
+        StopLimit order: order(asset, amount, style=StopLimitOrder(limit_price,
+                               stop_price))
+        """
         # something could be done with amount to further divide
         # between buy by share count OR buy shares up to a dollar amount
         # numeric == share count  AND  "$dollar.cents" == cost amount
 
-        """
-        amount > 0 :: Buy/Cover
-        amount < 0 :: Sell/Short
-        Market order:    order(sid, amount)
-        Limit order:     order(sid, amount, style=LimitOrder(limit_price))
-        Stop order:      order(sid, amount, style=StopOrder(stop_price))
-        StopLimit order: order(sid, amount, style=StopLimitOrder(limit_price,
-                               stop_price))
-        """
         if amount == 0:
             # Don't bother placing orders for 0 shares.
-            return
+            return None
         elif amount > self.max_shares:
             # Arbitrary limit of 100 billion (US) shares will never be
             # exceeded except by a buggy algorithm.
@@ -107,27 +141,48 @@ class Blotter(object):
         is_buy = (amount > 0)
         order = Order(
             dt=self.current_dt,
-            sid=sid,
+            asset=asset,
             amount=amount,
             stop=style.get_stop_price(is_buy),
             limit=style.get_limit_price(is_buy),
             id=order_id
         )
 
-        self.open_orders[order.sid].append(order)
+        self.open_orders[order.asset].append(order)
         self.orders[order.id] = order
         self.new_orders.append(order)
 
         return order.id
 
-    def cancel(self, order_id):
+    def batch_order(self, order_arg_lists):
+        """Place a batch of orders.
+
+        Parameters
+        ----------
+        order_arg_lists : iterable[tuple]
+            Tuples of args that `order` expects.
+
+        Returns
+        -------
+        order_ids : list[str or None]
+            The unique identifier (or None) for each of the orders placed
+            (or not placed).
+
+        Notes
+        -----
+        This is required for `Blotter` subclasses to be able to place a batch
+        of orders, instead of being passed the order requests one at a time.
+        """
+        return [self.order(*order_args) for order_args in order_arg_lists]
+
+    def cancel(self, order_id, relay_status=True):
         if order_id not in self.orders:
             return
 
         cur_order = self.orders[order_id]
 
         if cur_order.open:
-            order_list = self.open_orders[cur_order.sid]
+            order_list = self.open_orders[cur_order.asset]
             if cur_order in order_list:
                 order_list.remove(cur_order)
 
@@ -135,9 +190,76 @@ class Blotter(object):
                 self.new_orders.remove(cur_order)
             cur_order.cancel()
             cur_order.dt = self.current_dt
-            # we want this order's new status to be relayed out
-            # along with newly placed orders.
-            self.new_orders.append(cur_order)
+
+            if relay_status:
+                # we want this order's new status to be relayed out
+                # along with newly placed orders.
+                self.new_orders.append(cur_order)
+
+    def cancel_all_orders_for_asset(self, asset, warn=False,
+                                    relay_status=True):
+        """
+        Cancel all open orders for a given asset.
+        """
+        # (sadly) open_orders is a defaultdict, so this will always succeed.
+        orders = self.open_orders[asset]
+
+        # We're making a copy here because `cancel` mutates the list of open
+        # orders in place.  The right thing to do here would be to make
+        # self.open_orders no longer a defaultdict.  If we do that, then we
+        # should just remove the orders once here and be done with the matter.
+        for order in orders[:]:
+            self.cancel(order.id, relay_status)
+            if warn:
+                # Message appropriately depending on whether there's
+                # been a partial fill or not.
+                if order.filled > 0:
+                    warning_logger.warn(
+                        'Your order for {order_amt} shares of '
+                        '{order_sym} has been partially filled. '
+                        '{order_filled} shares were successfully '
+                        'purchased. {order_failed} shares were not '
+                        'filled by the end of day and '
+                        'were canceled.'.format(
+                            order_amt=order.amount,
+                            order_sym=order.asset.symbol,
+                            order_filled=order.filled,
+                            order_failed=order.amount - order.filled,
+                        )
+                    )
+                elif order.filled < 0:
+                    warning_logger.warn(
+                        'Your order for {order_amt} shares of '
+                        '{order_sym} has been partially filled. '
+                        '{order_filled} shares were successfully '
+                        'sold. {order_failed} shares were not '
+                        'filled by the end of day and '
+                        'were canceled.'.format(
+                            order_amt=order.amount,
+                            order_sym=order.asset.symbol,
+                            order_filled=-1 * order.filled,
+                            order_failed=-1 * (order.amount - order.filled),
+                        )
+                    )
+                else:
+                    warning_logger.warn(
+                        'Your order for {order_amt} shares of '
+                        '{order_sym} failed to fill by the end of day '
+                        'and was canceled.'.format(
+                            order_amt=order.amount,
+                            order_sym=order.asset.symbol,
+                        )
+                    )
+
+        assert not orders
+        del self.open_orders[asset]
+
+    def execute_cancel_policy(self, event):
+        if self.cancel_policy.should_cancel(event):
+            warn = self.cancel_policy.warn_on_cancel
+            for asset in copy(self.open_orders):
+                self.cancel_all_orders_for_asset(asset, warn,
+                                                 relay_status=False)
 
     def reject(self, order_id, reason=''):
         """
@@ -151,7 +273,7 @@ class Blotter(object):
 
         cur_order = self.orders[order_id]
 
-        order_list = self.open_orders[cur_order.sid]
+        order_list = self.open_orders[cur_order.asset]
         if cur_order in order_list:
             order_list.remove(cur_order)
 
@@ -182,266 +304,112 @@ class Blotter(object):
             # along with newly placed orders.
             self.new_orders.append(cur_order)
 
-    def process_split(self, split_event):
-        if split_event.sid not in self.open_orders:
-            return
+    def process_splits(self, splits):
+        """
+        Processes a list of splits by modifying any open orders as needed.
 
-        orders_to_modify = self.open_orders[split_event.sid]
-        for order in orders_to_modify:
-            order.handle_split(split_event)
+        Parameters
+        ----------
+        splits: list
+            A list of splits.  Each split is a tuple of (asset, ratio).
 
-    def process_benchmark(self, benchmark_event):
-        return
-        yield
+        Returns
+        -------
+        None
+        """
+        for asset, ratio in splits:
+            if asset not in self.open_orders:
+                continue
 
-    def process_trade(self, trade_event):
+            orders_to_modify = self.open_orders[asset]
+            for order in orders_to_modify:
+                order.handle_split(ratio)
 
-        if trade_event.sid not in self.open_orders:
-            return
+    def get_transactions(self, bar_data):
+        """
+        Creates a list of transactions based on the current open orders,
+        slippage model, and commission model.
 
-        if trade_event.volume < 1:
-            # there are zero volume trade_events bc some stocks trade
-            # less frequently than once per minute.
-            return
+        Parameters
+        ----------
+        bar_data: zipline._protocol.BarData
 
-        orders = self.open_orders[trade_event.sid]
-        orders.sort(key=lambda o: o.dt)
-        # Only use orders for the current day or before
-        current_orders = filter(
-            lambda o: o.dt <= trade_event.dt,
-            orders)
+        Notes
+        -----
+        This method book-keeps the blotter's open_orders dictionary, so that
+         it is accurate by the time we're done processing open orders.
 
-        processed_orders = []
-        for txn, order in self.process_transactions(trade_event,
-                                                    current_orders):
-            processed_orders.append(order)
-            yield txn, order
+        Returns
+        -------
+        transactions_list: List
+            transactions_list: list of transactions resulting from the current
+            open orders.  If there were no open orders, an empty list is
+            returned.
 
-        # remove closed orders. we should only have to check
-        # processed orders
-        def not_open(order):
-            return not order.open
-        closed_orders = filter(not_open, processed_orders)
+        commissions_list: List
+            commissions_list: list of commissions resulting from filling the
+            open orders.  A commission is an object with "asset" and "cost"
+            parameters.
+
+        closed_orders: List
+            closed_orders: list of all the orders that have filled.
+        """
+
+        closed_orders = []
+        transactions = []
+        commissions = []
+
+        if self.open_orders:
+            for asset, asset_orders in iteritems(self.open_orders):
+                slippage = self.slippage_models[type(asset)]
+
+                for order, txn in \
+                        slippage.simulate(bar_data, asset, asset_orders):
+                    commission = self.commission_models[type(asset)]
+                    additional_commission = commission.calculate(order, txn)
+
+                    if additional_commission > 0:
+                        commissions.append({
+                            "asset": order.asset,
+                            "order": order,
+                            "cost": additional_commission
+                        })
+
+                    order.filled += txn.amount
+                    order.commission += additional_commission
+
+                    order.dt = txn.dt
+
+                    transactions.append(txn)
+
+                    if not order.open:
+                        closed_orders.append(order)
+
+        return transactions, commissions, closed_orders
+
+    def prune_orders(self, closed_orders):
+        """
+        Removes all given orders from the blotter's open_orders list.
+
+        Parameters
+        ----------
+        closed_orders: iterable of orders that are closed.
+
+        Returns
+        -------
+        None
+        """
+        # remove all closed orders from our open_orders dict
         for order in closed_orders:
-            orders.remove(order)
+            asset = order.asset
+            asset_orders = self.open_orders[asset]
+            try:
+                asset_orders.remove(order)
+            except ValueError:
+                continue
 
-        if len(orders) == 0:
-            del self.open_orders[trade_event.sid]
-
-    def process_transactions(self, trade_event, current_orders):
-        for order, txn in self.transact(trade_event, current_orders):
-            if txn.type == zp.DATASOURCE_TYPE.COMMISSION:
-                order.commission = (order.commission or 0.0) + txn.cost
-            else:
-                if txn.amount == 0:
-                    raise zipline.errors.TransactionWithNoAmount(txn=txn)
-                if math.copysign(1, txn.amount) != order.direction:
-                    raise zipline.errors.TransactionWithWrongDirection(
-                        txn=txn, order=order)
-                if abs(txn.amount) > abs(self.orders[txn.order_id].amount):
-                    raise zipline.errors.TransactionVolumeExceedsOrder(
-                        txn=txn, order=order)
-
-                order.filled += txn.amount
-                if txn.commission is not None:
-                    order.commission = ((order.commission or 0.0) +
-                                        txn.commission)
-
-            # mark the date of the order to match the transaction
-            # that is filling it.
-            order.dt = txn.dt
-
-            yield txn, order
-
-    def __getstate__(self):
-
-        state_to_save = ['new_orders', 'orders', '_status']
-
-        state_dict = {k: self.__dict__[k] for k in state_to_save
-                      if k in self.__dict__}
-
-        # Have to handle defaultdicts specially
-        state_dict['open_orders'] = dict(self.open_orders)
-
-        STATE_VERSION = 1
-        state_dict[VERSION_LABEL] = STATE_VERSION
-
-        return state_dict
-
-    def __setstate__(self, state):
-
-        self.__init__()
-
-        OLDEST_SUPPORTED_STATE = 1
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("Blotter saved is state too old.")
-
-        open_orders = defaultdict(list)
-        open_orders.update(state.pop('open_orders'))
-        self.open_orders = open_orders
-
-        self.__dict__.update(state)
-
-
-class Order(object):
-    def __init__(self, dt, sid, amount, stop=None, limit=None, filled=0,
-                 commission=None, id=None):
-        """
-        @dt - datetime.datetime that the order was placed
-        @sid - stock sid of the order
-        @amount - the number of shares to buy/sell
-                  a positive sign indicates a buy
-                  a negative sign indicates a sell
-        @filled - how many shares of the order have been filled so far
-        """
-        # get a string representation of the uuid.
-        self.id = id or self.make_id()
-        self.dt = dt
-        self.reason = None
-        self.created = dt
-        self.sid = sid
-        self.amount = amount
-        self.filled = filled
-        self.commission = commission
-        self._status = ORDER_STATUS.OPEN
-        self.stop = stop
-        self.limit = limit
-        self.stop_reached = False
-        self.limit_reached = False
-        self.direction = math.copysign(1, self.amount)
-        self.type = zp.DATASOURCE_TYPE.ORDER
-
-    def make_id(self):
-        return uuid.uuid4().hex
-
-    def to_dict(self):
-        py = copy(self.__dict__)
-        for field in ['type', 'direction', '_status']:
-            del py[field]
-        py['status'] = self.status
-        return py
-
-    def to_api_obj(self):
-        pydict = self.to_dict()
-        obj = zp.Order(initial_values=pydict)
-        return obj
-
-    def check_triggers(self, event):
-        """
-        Update internal state based on price triggers and the
-        trade event's price.
-        """
-        stop_reached, limit_reached, sl_stop_reached = \
-            check_order_triggers(self, event)
-        if (stop_reached, limit_reached) \
-                != (self.stop_reached, self.limit_reached):
-            self.dt = event.dt
-        self.stop_reached = stop_reached
-        self.limit_reached = limit_reached
-        if sl_stop_reached:
-            # Change the STOP LIMIT order into a LIMIT order
-            self.stop = None
-
-    def handle_split(self, split_event):
-        ratio = split_event.ratio
-
-        # update the amount, limit_price, and stop_price
-        # by the split's ratio
-
-        # info here: http://finra.complinet.com/en/display/display_plain.html?
-        # rbid=2403&element_id=8950&record_id=12208&print=1
-
-        # new_share_amount = old_share_amount / ratio
-        # new_price = old_price * ratio
-
-        self.amount = int(self.amount / ratio)
-
-        if self.limit is not None:
-            self.limit = round(self.limit * ratio, 2)
-
-        if self.stop is not None:
-            self.stop = round(self.stop * ratio, 2)
-
-    @property
-    def status(self):
-        if not self.open_amount:
-            return ORDER_STATUS.FILLED
-        elif self._status == ORDER_STATUS.HELD and self.filled:
-            return ORDER_STATUS.OPEN
-        else:
-            return self._status
-
-    @status.setter
-    def status(self, status):
-        self._status = status
-
-    def cancel(self):
-        self.status = ORDER_STATUS.CANCELLED
-
-    def reject(self, reason=''):
-        self.status = ORDER_STATUS.REJECTED
-        self.reason = reason
-
-    def hold(self, reason=''):
-        self.status = ORDER_STATUS.HELD
-        self.reason = reason
-
-    @property
-    def open(self):
-        return self.status in [ORDER_STATUS.OPEN, ORDER_STATUS.HELD]
-
-    @property
-    def triggered(self):
-        """
-        For a market order, True.
-        For a stop order, True IFF stop_reached.
-        For a limit order, True IFF limit_reached.
-        """
-        if self.stop is not None and not self.stop_reached:
-            return False
-
-        if self.limit is not None and not self.limit_reached:
-            return False
-
-        return True
-
-    @property
-    def open_amount(self):
-        return self.amount - self.filled
-
-    def __repr__(self):
-        """
-        String representation for this object.
-        """
-        return "Order(%s)" % self.to_dict().__repr__()
-
-    def __unicode__(self):
-        """
-        Unicode representation for this object.
-        """
-        return text_type(repr(self))
-
-    def __getstate__(self):
-
-        state_dict = \
-            {k: v for k, v in iteritems(self.__dict__)
-                if not k.startswith('_')}
-
-        state_dict['_status'] = self._status
-
-        STATE_VERSION = 1
-        state_dict[VERSION_LABEL] = STATE_VERSION
-
-        return state_dict
-
-    def __setstate__(self, state):
-
-        OLDEST_SUPPORTED_STATE = 1
-        version = state.pop(VERSION_LABEL)
-
-        if version < OLDEST_SUPPORTED_STATE:
-            raise BaseException("Order saved state is too old.")
-
-        self.__dict__.update(state)
+        # now clear out the assets from our open_orders dict that have
+        # zero open orders
+        for asset in list(self.open_orders.keys()):
+            if len(self.open_orders[asset]) == 0:
+                del self.open_orders[asset]
